@@ -30,6 +30,7 @@ export const setFields: NodeDef = {
   meta: {
     label: "Set Fields",
     description: "จัด/แปลงข้อมูลแบบไม่ต้องเขียนโค้ด (เลือก field จากข้อมูล หรือใส่ค่าคงที่)",
+    fields: []
   },
   retries: 0,
   outputFields: (cfg) =>
