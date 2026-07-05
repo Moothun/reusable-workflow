@@ -17,14 +17,14 @@ export default function NodeConfigForm({
 
   if (meta.fields.length === 0) {
     return (
-      <p style={{ fontSize: 12, color: "#888" }}>
+      <p className="helper">
         node นี้ไม่มี config (รับ payload จาก trigger โดยตรง)
       </p>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+    <div className="stack stack-md">
       {meta.fields.map((f) => (
         <Field key={f.name} spec={f} value={config[f.name]} onChange={(v) => set(f.name, v)} />
       ))}
@@ -41,48 +41,34 @@ function Field({
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
-  const labelStyle: React.CSSProperties = { fontSize: 12, fontWeight: 600, marginBottom: 4 };
-  const inputStyle: React.CSSProperties = {
-    width: "100%",
-    fontSize: 13,
-    padding: "6px 8px",
-    border: "1px solid #d4d4d8",
-    borderRadius: 6,
-    fontFamily: "inherit",
-    boxSizing: "border-box",
-  };
-
   return (
-    <label style={{ display: "block" }}>
-      <div style={labelStyle}>
+    <label className="field">
+      <div className="label">
         {spec.label}
-        {spec.required && <span style={{ color: "#dc2626" }}> *</span>}
+        {spec.required && <span className="text-muted"> *</span>}
       </div>
 
       {spec.kind === "textarea" || spec.kind === "json" ? (
         <textarea
           rows={spec.kind === "json" ? 4 : 3}
-          style={{ ...inputStyle, fontFamily: spec.kind === "json" ? "monospace" : "inherit" }}
+          className="textarea"
+          style={{ fontFamily: spec.kind === "json" ? "var(--font-geist-mono)" : "inherit" }}
           placeholder={spec.placeholder}
           value={(value as string) ?? ""}
           onChange={(e) => onChange(e.target.value)}
         />
       ) : spec.kind === "boolean" ? (
-        <input
-          type="checkbox"
-          checked={Boolean(value)}
-          onChange={(e) => onChange(e.target.checked)}
-        />
+        <input type="checkbox" className="checkbox" checked={Boolean(value)} onChange={(e) => onChange(e.target.checked)} />
       ) : spec.kind === "number" ? (
         <input
           type="number"
-          style={inputStyle}
+          className="input"
           placeholder={spec.placeholder}
           value={(value as number) ?? ""}
           onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
         />
       ) : spec.kind === "select" ? (
-        <select style={inputStyle} value={(value as string) ?? ""} onChange={(e) => onChange(e.target.value)}>
+        <select className="select" value={(value as string) ?? ""} onChange={(e) => onChange(e.target.value)}>
           <option value="">— เลือก —</option>
           {spec.options?.map((opt) => (
             <option key={opt} value={opt}>
@@ -93,14 +79,14 @@ function Field({
       ) : (
         <input
           type="text"
-          style={inputStyle}
+          className="input"
           placeholder={spec.placeholder}
           value={(value as string) ?? ""}
           onChange={(e) => onChange(e.target.value)}
         />
       )}
 
-      {spec.help && <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>{spec.help}</div>}
+      {spec.help && <div className="helper">{spec.help}</div>}
     </label>
   );
 }
