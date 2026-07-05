@@ -21,7 +21,7 @@ import AiHelperPanel from "@/components/AiHelperPanel";
 import NodePalette from "@/components/NodePalette";
 import WorkflowNode from "@/components/WorkflowNode";
 import NodeIcon from "@/components/NodeIcon";
-import { Play, Undo2, Plus, Trash2, Waypoints } from "lucide-react";
+import { Play, Undo2, Plus, Trash2, Waypoints, LayoutGrid } from "lucide-react";
 import type { NodeMeta } from "@/lib/nodes/types";
 import type { Graph } from "@/lib/graph";
 import {
@@ -395,6 +395,54 @@ function CanvasInner() {
     }
   };
 
+  // Auto-arrange nodes into clean left-to-right layers by graph depth.
+  // Undoable via ⌘Z (reuses the snapshot history).
+  const tidyLayout = () => {
+    if (nodes.length === 0) return;
+
+    const adj = new Map(nodes.map((n) => [n.id, [] as string[]]));
+    const indeg = new Map(nodes.map((n) => [n.id, 0]));
+    edges.forEach((e) => {
+      if (adj.has(e.source) && indeg.has(e.target)) {
+        adj.get(e.source)!.push(e.target);
+        indeg.set(e.target, indeg.get(e.target)! + 1);
+      }
+    });
+
+    // Kahn topological pass → longest-path layer index per node.
+    const layer = new Map(nodes.map((n) => [n.id, 0]));
+    const work = new Map(indeg);
+    const queue = nodes.filter((n) => work.get(n.id) === 0).map((n) => n.id);
+    while (queue.length) {
+      const id = queue.shift()!;
+      for (const t of adj.get(id) ?? []) {
+        layer.set(t, Math.max(layer.get(t)!, layer.get(id)! + 1));
+        work.set(t, work.get(t)! - 1);
+        if (work.get(t) === 0) queue.push(t);
+      }
+    }
+
+    // x by layer, y by order within layer (nodes in cycles stay at layer 0).
+    const COL = 280;
+    const ROW = 120;
+    const X0 = 120;
+    const Y0 = 160;
+    const rowInLayer = new Map<number, number>();
+    const pos = new Map<string, { x: number; y: number }>();
+    nodes.forEach((n) => {
+      const L = layer.get(n.id) ?? 0;
+      const row = rowInLayer.get(L) ?? 0;
+      rowInLayer.set(L, row + 1);
+      pos.set(n.id, { x: X0 + L * COL, y: Y0 + row * ROW });
+    });
+
+    setHistoryPast((past) =>
+      pushSnapshot(past, { nodes, edges, seq, selectedNodeId, selectedEdgeId }),
+    );
+    setNodes((ns) => ns.map((n) => ({ ...n, position: pos.get(n.id) ?? n.position })));
+    requestAnimationFrame(() => fitView({ padding: 0.2, duration: 400 }));
+  };
+
   const load = async (id: string) => {
     const res = await fetch(`/api/workflows/${id}`);
     if (!res.ok) return;
@@ -481,9 +529,18 @@ function CanvasInner() {
 
         <button
           type="button"
+          onClick={tidyLayout}
+          disabled={nodes.length === 0}
+          title="Auto-arrange nodes left-to-right"
+          className="btn btn-secondary topbar-button"
+        >
+          <LayoutGrid size={15} strokeWidth={2} /> Tidy
+        </button>
+        <button
+          type="button"
           onClick={undo}
           disabled={historyPast.length === 0}
-          title="Undo AI apply (⌘Z)"
+          title="Undo (⌘Z)"
           className="btn btn-secondary topbar-button"
         >
           <Undo2 size={15} strokeWidth={2} /> Undo
