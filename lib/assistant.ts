@@ -102,7 +102,7 @@ Rules:
 - Always include exactly one "trigger" node as the entry point.
 - Use edges array for connections; labels "true"/"false" for if branches, "error" for error routing.
 - Node ids: use short ids like n1, n2, n3.
-- Position nodes vertically with ~120px spacing starting at (140, 60).
+- Position nodes left-to-right with ~280px horizontal spacing starting at (120, 200); put branch outputs on separate rows (~140px apart).
 - Fill config fields with sensible placeholder values using {{field}} templates where helpful.
 - onError defaults to "stop" unless error routing is needed.`;
 

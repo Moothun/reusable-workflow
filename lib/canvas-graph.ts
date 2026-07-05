@@ -1,6 +1,16 @@
-import type { Edge, Node } from "@xyflow/react";
+import { MarkerType, type DefaultEdgeOptions, type Edge, type Node } from "@xyflow/react";
 import type { Graph } from "@/lib/graph";
 import type { NodeMeta } from "@/lib/nodes/types";
+
+/**
+ * Shared edge style — horizontal flow with animated dashes + an arrowhead so
+ * direction is always visible. Applied to AI, loaded, and hand-drawn edges.
+ */
+export const FLOW_EDGE: DefaultEdgeOptions = {
+  type: "smoothstep",
+  animated: true,
+  markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#a29ccb" },
+};
 
 type OnError = "stop" | "continue" | "route";
 
@@ -41,6 +51,7 @@ export function graphToFlowEdges(graph: Graph): Edge[] {
     source: e.from,
     target: e.to,
     label: e.label,
+    ...FLOW_EDGE,
   }));
 }
 
