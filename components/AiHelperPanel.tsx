@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 import type { Graph } from "@/lib/graph";
 import NodeIcon from "@/components/NodeIcon";
@@ -16,6 +16,8 @@ type Props = {
   /** Context props — optional so any caller compiles; they degrade gracefully. */
   workflowName?: string;
   selectedNode?: SelectedNode | null;
+  /** When set to a new object, the panel auto-sends this text once (error → AI fix). */
+  askFromError?: { text: string } | null;
 };
 
 const STARTERS = [
@@ -33,6 +35,7 @@ export default function AiHelperPanel({
   nodeCount,
   workflowName = "",
   selectedNode = null,
+  askFromError = null,
 }: Props) {
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -56,6 +59,16 @@ export default function AiHelperPanel({
     }
   };
 
+  // Auto-send an error-fix prompt from the canvas. Guard by object identity so
+  // it fires once per click (the caller passes a fresh object each time).
+  const lastAskRef = useRef<{ text: string } | null>(null);
+  useEffect(() => {
+    if (askFromError && askFromError !== lastAskRef.current) {
+      lastAskRef.current = askFromError;
+      void send(askFromError.text);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askFromError]);
   // Quick actions adapt to whether a node is selected. Each seeds the conversation,
   // which loops to a plan before applying to the canvas.
   const quickActions: { label: string; prompt: string }[] = selectedNode

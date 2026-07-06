@@ -13,6 +13,8 @@ import {
   Loader2,
   type LucideIcon,
 } from "lucide-react";
+import type { Graph } from "@/lib/graph";
+import { BRAND } from "@/lib/brand";
 import PlanReview from "@/components/PlanReview";
 import { useAssistant } from "@/components/useAssistant";
 
@@ -91,8 +93,8 @@ export default function Home() {
     <div className="home">
       <header className="home-topbar">
         <span className="home-brand">
-          <span className="home-brand-mark">◆</span>
-          Fluxion
+          <span className="home-brand-mark">{BRAND.emoji}</span>
+          {BRAND.name}
         </span>
         <button
           type="button"

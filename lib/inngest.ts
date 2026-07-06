@@ -24,12 +24,14 @@ export const hello = inngest.createFunction(
 export const runWorkflow = inngest.createFunction(
   { id: "run-workflow", retries: 0, triggers: [{ event: "workflow.run" }] },
   async ({ event, step }) => {
-    const { runId: providedRunId, workflowId, payload, trigger } = event.data as {
-      runId?: string;
-      workflowId: string;
-      payload?: Record<string, unknown>;
-      trigger?: string;
-    };
+    const { runId: providedRunId, workflowId, payload, trigger, startNodeId } =
+      event.data as {
+        runId?: string;
+        workflowId: string;
+        payload?: Record<string, unknown>;
+        trigger?: string;
+        startNodeId?: string;
+      };
     const wf = await step.run("load-workflow", () =>
       prisma.workflow.findUniqueOrThrow({ where: { id: workflowId } }),
     );
@@ -41,7 +43,9 @@ export const runWorkflow = inngest.createFunction(
           prisma.run.create({ data: { workflowId, status: "running", trigger: trigger ?? "manual" } })
     );
     try {
-      const result = await runGraph(graph, run.id, step, payload ?? {});
+      const result = await runGraph(graph, run.id, step, payload ?? {}, {
+        startNodeId,
+      });
       await step.run("finalize", () =>
         prisma.run.update({
           where: { id: run.id },

@@ -12,7 +12,12 @@ import { isPrismaConnectionError } from "@/lib/prisma-errors";
  */
 export async function POST(req: Request) {
   try {
-    const { workflowId: wfIdInput, graph, payload = {} } = await req.json();
+    const {
+      workflowId: wfIdInput,
+      graph,
+      payload = {},
+      startNodeId,
+    } = await req.json();
 
     let workflowId: string | undefined = wfIdInput;
 
@@ -31,7 +36,7 @@ export async function POST(req: Request) {
 
     await inngest.send({
       name: "workflow.run",
-      data: { runId: run.id, workflowId, payload, trigger: "manual" },
+      data: { runId: run.id, workflowId, payload, trigger: "manual", startNodeId },
     });
 
     return Response.json({ runId: run.id, workflowId });

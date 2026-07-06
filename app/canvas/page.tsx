@@ -21,7 +21,21 @@ import AiHelperPanel from "@/components/AiHelperPanel";
 import NodePalette from "@/components/NodePalette";
 import WorkflowNode from "@/components/WorkflowNode";
 import NodeIcon from "@/components/NodeIcon";
-import { Play, Undo2, Plus, Trash2, Waypoints, LayoutGrid } from "lucide-react";
+import {
+  Play,
+  Undo2,
+  Plus,
+  Trash2,
+  Waypoints,
+  LayoutGrid,
+  Loader2,
+  X,
+  RotateCcw,
+  Sparkles,
+  ArrowLeft,
+} from "lucide-react";
+import { friendlyError, statusThai } from "@/lib/friendly-errors";
+import { BRAND } from "@/lib/brand";
 import type { NodeMeta } from "@/lib/nodes/types";
 import type { Graph } from "@/lib/graph";
 import {
@@ -45,6 +59,23 @@ type NodeData = CanvasNodeData;
 const data = nodeData;
 
 const nodeTypes = { workflow: WorkflowNode };
+
+const statusVariant = (s: string) =>
+  s === "success" ? "success" : s === "failed" ? "error" : "neutral";
+const fmtIO = (v: unknown) => (v == null ? "—" : JSON.stringify(v, null, 2));
+const shortJson = (v: unknown, n = 400) => {
+  const s = typeof v === "string" ? v : JSON.stringify(v);
+  if (!s) return "-";
+  return s.length > n ? s.slice(0, n) + "…" : s;
+};
+
+type RunNode = {
+  nodeId: string;
+  status: string;
+  input: unknown;
+  output: unknown;
+  error: string | null;
+};
 
 function toGraph(nodes: Node[], edges: Edge[]) {
   return {
@@ -80,9 +111,17 @@ function CanvasInner() {
   const [busy, setBusy] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [historyPast, setHistoryPast] = useState<CanvasSnapshot[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runStatus, setRunStatus] = useState<string | null>(null);
+  const [runNodeRuns, setRunNodeRuns] = useState<RunNode[]>([]);
+  const [partialRun, setPartialRun] = useState(false);
+  const [runPanelOpen, setRunPanelOpen] = useState(false);
+  const [askFromError, setAskFromError] = useState<{ text: string } | null>(null);
+  const [showTechnical, setShowTechnical] = useState(false);
 
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const skipAutosaveRef = useRef(true);
   const mountedRef = useRef(false);
   const didInitRef = useRef(false);
@@ -125,6 +164,41 @@ function CanvasInner() {
           data(selectedNode).type,
       }
     : null;
+
+  const nodeRunsById = useMemo(() => {
+    const m: Record<string, RunNode> = {};
+    for (const nr of runNodeRuns) m[nr.nodeId] = nr;
+    return m;
+  }, [runNodeRuns]);
+
+  // Best-effort "currently running" node while active: the next reachable node
+  // that hasn't produced a NodeRun yet (NodeRuns are written on completion).
+  const runningNodeId = useMemo(() => {
+    if (runStatus !== "running" && runStatus !== "queued") return null;
+    const done = new Set(runNodeRuns.map((r) => r.nodeId));
+    if (runNodeRuns.length === 0) {
+      const start = nodes.find((n) => data(n).type === "trigger") ?? nodes[0];
+      return start && !done.has(start.id) ? start.id : null;
+    }
+    const last = runNodeRuns[runNodeRuns.length - 1].nodeId;
+    const edge = edges.find((e) => e.source === last && !done.has(e.target));
+    return edge?.target ?? null;
+  }, [runStatus, runNodeRuns, nodes, edges]);
+
+  // Inject run status for display only — kept out of `nodes` so run polling
+  // never triggers autosave (toGraph ignores runStatus anyway).
+  const displayNodes = useMemo(
+    () =>
+      nodes.map((n) => ({
+        ...n,
+        data: {
+          ...(n.data as object),
+          runStatus:
+            n.id === runningNodeId ? "running" : nodeRunsById[n.id]?.status,
+        },
+      })),
+    [nodes, nodeRunsById, runningNodeId],
+  );
 
   const save = useCallback(
     async (
@@ -313,6 +387,65 @@ function CanvasInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [undo, selectedNodeId, selectedEdgeId]);
 
+  const applyRunPayload = useCallback(
+    (json: { runId: string | null; status?: string; nodeRuns?: RunNode[] }) => {
+      if (!json.runId) {
+        setActiveRunId(null);
+        setRunStatus(null);
+        setRunNodeRuns([]);
+        return;
+      }
+      setActiveRunId(json.runId);
+      setRunStatus(json.status ?? null);
+      setRunNodeRuns(json.nodeRuns ?? []);
+    },
+    [],
+  );
+
+  // Poll a specific run by id (so a test/scheduled run can't be confused for it).
+  const fetchRun = useCallback(
+    async (runId: string) => {
+      try {
+        const res = await fetch(`/api/runs/${runId}`);
+        if (!res.ok) return;
+        applyRunPayload(await res.json());
+      } catch {
+        // ignore transient poll errors
+      }
+    },
+    [applyRunPayload],
+  );
+
+  // Load a workflow's latest run (on open) to show its last node states.
+  const fetchLatestRun = useCallback(
+    async (wfId: string) => {
+      try {
+        const res = await fetch(`/api/workflows/${wfId}/latest-run`);
+        if (!res.ok) return;
+        applyRunPayload(await res.json());
+      } catch {
+        // ignore transient errors
+      }
+    },
+    [applyRunPayload],
+  );
+
+  // Poll every 1s while active; clear on terminal / run change / unmount (no leak).
+  useEffect(() => {
+    if (!activeRunId) return;
+    if (runStatus !== "queued" && runStatus !== "running") return;
+    pollRef.current = setInterval(() => void fetchRun(activeRunId), 1000);
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [activeRunId, runStatus, fetchRun]);
+
+  // Collapse the technical-details box when switching between nodes.
+  useEffect(() => setShowTechnical(false), [selectedNodeId]);
+
   const addNode = (type: string) => {
     const id = "n" + seq;
     setSeq(seq + 1);
@@ -452,6 +585,12 @@ function CanvasInner() {
     setName(wf.name);
     setWorkflowId(id);
     setHistoryPast([]);
+    setActiveRunId(null);
+    setRunStatus(null);
+    setRunNodeRuns([]);
+    setPartialRun(false);
+    setRunPanelOpen(false);
+    void fetchLatestRun(id);
   };
 
   // Deep-link from Home: ?id=<wf> opens it; otherwise apply an AI draft stashed
@@ -480,39 +619,93 @@ function CanvasInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metasLoaded]);
 
-  const runNow = async () => {
+  const startRun = async (
+    startNodeId?: string,
+    payload: Record<string, unknown> = {},
+  ) => {
     const id = await save();
     if (!id) return;
+    // cancel any in-flight poll before starting a fresh run
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
     setBusy(true);
     try {
       const res = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflowId: id, payload: {} }),
+        body: JSON.stringify({ workflowId: id, payload, startNodeId }),
       });
       if (!res.ok) {
         alert("run ล้มเหลว: " + (await res.text()));
         return;
       }
       const { runId } = await res.json();
-      if (runId) router.push(`/runs/${runId}`);
+      if (runId) {
+        setActiveRunId(runId);
+        setRunStatus("queued");
+        setRunNodeRuns([]);
+        setPartialRun(!!startNodeId);
+        setRunPanelOpen(true);
+        void fetchRun(runId);
+      }
     } finally {
       setBusy(false);
     }
   };
+  const runNow = () => void startRun();
+  const runFromHere = (nodeId: string) => void startRun(nodeId);
+
+  // Retry a failed step: re-run from that node with its ORIGINAL input (the data
+  // it received last time). Runs from the node onward — a true single-node run
+  // would need interpreter stopNodeId support, which is off-limits here.
+  const retryNode = (nodeId: string) => {
+    const nr = nodeRunsById[nodeId];
+    void startRun(nodeId, (nr?.input as Record<string, unknown>) ?? {});
+  };
+
+  const composeErrorPrompt = (node: Node) => {
+    const nr = nodeRunsById[node.id];
+    const label = metaByType.get(data(node).type)?.label ?? data(node).type;
+    return (
+      `ขั้นตอน "${label}" (${data(node).type}) รันแล้วเกิดข้อผิดพลาด:\n${nr?.error ?? ""}\n\n` +
+      `การตั้งค่าปัจจุบัน: ${shortJson(data(node).config ?? {})}\n` +
+      `ข้อมูลที่รับเข้ามา: ${shortJson(nr?.input)}\n\n` +
+      `ช่วยอธิบายสาเหตุแบบเข้าใจง่ายสำหรับคนไม่เขียนโค้ด และบอกวิธีแก้ทีละขั้น ` +
+      `ถ้าแก้การตั้งค่าได้ ให้เสนอค่าใหม่`
+    );
+  };
+
+  const askAiToFix = (node: Node) => {
+    setAskFromError({ text: composeErrorPrompt(node) });
+  };
+
+  const nodeLabel = (id: string) => {
+    const n = nodes.find((x) => x.id === id);
+    return n ? data(n).label : id;
+  };
 
   return (
-    <main className="stack" style={{ minHeight: "100vh" }}>
+    <main className="stack" style={{ height: "100vh", overflow: "hidden" }}>
       <div className="topbar">
         <a
           href="/"
+          className="btn btn-secondary topbar-button topbar-back"
+          aria-label="กลับหน้าหลัก"
+          title="กลับหน้าหลัก"
+        >
+          <ArrowLeft size={15} strokeWidth={2} />
+          <span className="hidden sm:inline">หน้าหลัก</span>
+        </a>
+        <span className="topbar-sep" />
+        <span
           className="home-brand"
           style={{ fontSize: "var(--font-size-base)" }}
-          title="Back to home"
         >
-          <span className="home-brand-mark">◆</span>
-          Fluxion
-        </a>
+          <span className="home-brand-mark">{BRAND.emoji}</span>
+          <span className="hidden md:inline">{BRAND.name}</span>
+        </span>
         <span className="topbar-sep" />
         <input
           value={name}
@@ -560,12 +753,37 @@ function CanvasInner() {
         </select>
         <button
           type="button"
-          onClick={() => void runNow()}
-          disabled={busy}
+          onClick={runNow}
+          disabled={busy || runStatus === "queued" || runStatus === "running"}
           className="btn btn-primary topbar-button"
         >
-          <Play size={15} strokeWidth={2} /> Run
+          {runStatus === "queued" ? (
+            <>
+              <Loader2 size={15} strokeWidth={2} className="animate-spin" /> Queued…
+            </>
+          ) : runStatus === "running" ? (
+            <>
+              <Loader2 size={15} strokeWidth={2} className="animate-spin" /> Running…
+            </>
+          ) : (
+            <>
+              <Play size={15} strokeWidth={2} /> Run
+            </>
+          )}
         </button>
+        {activeRunId && (
+          <button
+            type="button"
+            className="badge run-pill"
+            onClick={() => setRunPanelOpen((v) => !v)}
+            title="Toggle run panel"
+          >
+            <span className={`run-dot is-${runStatus ?? "queued"}`} />
+            {runStatus === "running" || runStatus === "queued"
+              ? "Running…"
+              : `Run ${runStatus}`}
+          </button>
+        )}
         <span className="badge">
           {nodes.length} · {edges.length}
         </span>
@@ -578,13 +796,14 @@ function CanvasInner() {
           nodeCount={nodes.length}
           workflowName={name}
           selectedNode={selectedNodeInfo}
+          askFromError={askFromError}
         />
 
         <section className="canvas-stage surface hero-surface panel panel-compact">
           {clientReady ? (
             <ReactFlow
               className="canvas-flow"
-              nodes={nodes}
+              nodes={displayNodes}
               edges={edges}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
@@ -691,6 +910,112 @@ function CanvasInner() {
                     onChange={(cfg) => updateNodeData(selectedNode.id, { config: cfg })}
                   />
                 )}
+
+                {nodeRunsById[selectedNode.id]?.status !== "failed" && (
+                  <button
+                    type="button"
+                    onClick={() => runFromHere(selectedNode.id)}
+                    disabled={busy || runStatus === "queued" || runStatus === "running"}
+                    className="btn btn-secondary"
+                    style={{ width: "100%", justifyContent: "center" }}
+                    title="รัน workflow เริ่มจากขั้นตอนนี้"
+                  >
+                    <Play size={14} strokeWidth={2} /> รันจากขั้นตอนนี้
+                  </button>
+                )}
+
+                {(() => {
+                  const nr = nodeRunsById[selectedNode.id];
+                  const runActive =
+                    runStatus === "queued" || runStatus === "running";
+
+                  if (!nr) {
+                    return (
+                      <div className="stack stack-sm">
+                        <div className="eyebrow">ผลรันล่าสุด</div>
+                        <div className="helper">
+                          ยังไม่มีข้อมูล — กด Run เพื่อดูผลของขั้นตอนนี้
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (nr.status === "failed") {
+                    return (
+                      <div className="stack stack-sm">
+                        <div className="eyebrow">ผลรันล่าสุด</div>
+                        <div className="error-friendly">
+                          <div className="error-friendly__summary">
+                            {friendlyError(nr.error ?? "")}
+                          </div>
+                          <div className="row-wrap" style={{ gap: 8 }}>
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              disabled={runActive}
+                              onClick={() => retryNode(selectedNode.id)}
+                            >
+                              {runActive ? (
+                                <>
+                                  <Loader2
+                                    size={14}
+                                    strokeWidth={2}
+                                    className="animate-spin"
+                                  />{" "}
+                                  กำลังลองใหม่…
+                                </>
+                              ) : (
+                                <>
+                                  <RotateCcw size={14} strokeWidth={2} /> ลองใหม่ขั้นตอนนี้
+                                </>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              onClick={() => askAiToFix(selectedNode)}
+                            >
+                              <Sparkles size={14} strokeWidth={2} /> ให้ AI ช่วยแก้
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            className="link error-friendly__toggle"
+                            onClick={() => setShowTechnical((v) => !v)}
+                          >
+                            ดูรายละเอียดทางเทคนิค {showTechnical ? "▴" : "▾"}
+                          </button>
+                          {showTechnical && (
+                            <div className="stack stack-sm">
+                              <pre className="code-block code-block-error">
+                                {nr.error}
+                              </pre>
+                              <div className="label">ข้อมูลที่รับเข้ามา</div>
+                              <pre className="code-block">{fmtIO(nr.input)}</pre>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="stack stack-sm">
+                      <div className="row-between">
+                        <div className="eyebrow">ผลรันล่าสุด</div>
+                        <span
+                          className={`badge badge-${statusVariant(nr.status)}`}
+                        >
+                          {statusThai(nr.status)}
+                        </span>
+                      </div>
+                      <div className="label">ข้อมูลเข้า</div>
+                      <pre className="code-block">{fmtIO(nr.input)}</pre>
+                      <div className="label">ผลลัพธ์</div>
+                      <pre className="code-block">{fmtIO(nr.output)}</pre>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -729,6 +1054,76 @@ function CanvasInner() {
           </aside>
         )}
       </div>
+
+      {runPanelOpen && (
+        <div className="run-panel surface">
+          <div className="run-panel__head">
+            <div className="row" style={{ gap: 8 }}>
+              <span className={`run-dot is-${runStatus ?? "queued"}`} />
+              <strong style={{ fontSize: "var(--font-size-sm)" }}>Run</strong>
+              <span className="helper">
+                {runNodeRuns.length}/{nodes.length} nodes
+              </span>
+              {partialRun && <span className="badge badge-warning">partial</span>}
+            </div>
+            <div className="row" style={{ gap: 8 }}>
+              {activeRunId && (
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => router.push(`/runs/${activeRunId}`)}
+                >
+                  Open full run →
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-secondary topbar-button"
+                onClick={() => setRunPanelOpen(false)}
+                title="Close run panel"
+              >
+                <X size={15} strokeWidth={2} />
+              </button>
+            </div>
+          </div>
+
+          {partialRun && (
+            <div className="run-panel__warn">
+              รันบางส่วน: node ก่อนหน้าไม่ถูกรัน — ค่าจาก {"{{node.field}}"} ก่อนจุดนี้จะว่าง
+            </div>
+          )}
+
+          <div className="run-panel__timeline">
+            {runNodeRuns.length === 0 &&
+              runStatus !== "running" &&
+              runStatus !== "queued" && (
+                <div className="helper">No steps yet.</div>
+              )}
+            {runNodeRuns.map((nr) => (
+              <button
+                key={nr.nodeId}
+                type="button"
+                className={`run-row is-${nr.status}`}
+                onClick={() => {
+                  setSelectedNodeId(nr.nodeId);
+                  setSelectedEdgeId(null);
+                }}
+              >
+                <span className={`run-dot is-${nr.status}`} />
+                <span className="run-row__id">{nodeLabel(nr.nodeId)}</span>
+                <span className="helper">{nr.status}</span>
+              </button>
+            ))}
+            {runningNodeId && (
+              <div className="run-row is-running">
+                <span className="run-dot is-running" />
+                <span className="run-row__id">{nodeLabel(runningNodeId)}</span>
+                <span className="helper">running…</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <NodePalette
         metas={metas}
