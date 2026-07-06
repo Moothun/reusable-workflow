@@ -114,7 +114,13 @@ function validateConfig(type: string, config: Record<string, unknown>) {
   const def = registry[type];
   if (!def) return {};
   const parsed = def.schema.safeParse(config);
-  return parsed.success ? (parsed.data as Record<string, unknown>) : {};
+  if (parsed.success) return parsed.data as Record<string, unknown>;
+  // ทั้งก้อนถูกทิ้งถ้า field เดียวพัง — อย่างน้อย log ว่า field ไหน (กัน blank config เงียบ ๆ)
+  console.warn(
+    `[assistant] dropped config for "${type}":`,
+    parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).join("; "),
+  );
+  return {};
 }
 
 function normalizeGraph(raw: z.infer<typeof LlmGraphSchema>, current: Graph): Graph {
