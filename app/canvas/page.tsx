@@ -1,30 +1,50 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ReactFlow,
   Background,
   Controls,
+  MiniMap,
   addEdge,
   useNodesState,
   useEdgesState,
+  useReactFlow,
+  ReactFlowProvider,
   type Connection,
   type Node,
   type Edge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import NodeConfigForm from "@/components/NodeConfigForm";
+import AiHelperPanel from "@/components/AiHelperPanel";
+import NodePalette from "@/components/NodePalette";
+import WorkflowNode from "@/components/WorkflowNode";
+import NodeIcon from "@/components/NodeIcon";
+import { Play, Undo2, Plus, Trash2, Waypoints, LayoutGrid } from "lucide-react";
 import type { NodeMeta } from "@/lib/nodes/types";
+import type { Graph } from "@/lib/graph";
+import {
+  FLOW_EDGE,
+  graphToFlowEdges,
+  graphToFlowNodes,
+  maxSeqFromNodes,
+  nodeData,
+  type CanvasNodeData,
+} from "@/lib/canvas-graph";
+import { diffChangedNodeIds } from "@/lib/graph-diff";
+import {
+  pushSnapshot,
+  popSnapshot,
+  type CanvasSnapshot,
+} from "@/lib/graph-history";
 
-type OnError = "stop" | "continue" | "route";
-type NodeData = {
-  type: string;
-  label: string;
-  config: Record<string, unknown>;
-  onError: OnError;
-};
+type OnError = CanvasNodeData["onError"];
+type NodeData = CanvasNodeData;
 
-const data = (n: Node) => n.data as unknown as NodeData;
+const data = nodeData;
+
+const nodeTypes = { workflow: WorkflowNode };
 
 function toGraph(nodes: Node[], edges: Edge[]) {
   return {
@@ -44,8 +64,9 @@ function toGraph(nodes: Node[], edges: Edge[]) {
   };
 }
 
-export default function Canvas() {
+function CanvasInner() {
   const router = useRouter();
+  const { fitView, screenToFlowPosition } = useReactFlow();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [seq, setSeq] = useState(1);
@@ -57,14 +78,31 @@ export default function Canvas() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [historyPast, setHistoryPast] = useState<CanvasSnapshot[]>([]);
+
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipAutosaveRef = useRef(true);
+  const mountedRef = useRef(false);
+  const didInitRef = useRef(false);
+  const [clientReady, setClientReady] = useState(false);
+  const [metasLoaded, setMetasLoaded] = useState(false);
+
+  useEffect(() => {
+    setClientReady(true);
+  }, []);
 
   useEffect(() => {
     fetch("/api/nodes")
       .then((r) => r.json())
-      .then(setMetas);
+      .then(setMetas)
+      .catch(() => setMetas([]))
+      .finally(() => setMetasLoaded(true));
     fetch("/api/workflows")
-      .then((r) => r.json())
-      .then(setWorkflows);
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setWorkflows)
+      .catch(() => setWorkflows([]));
   }, []);
 
   const metaByType = useMemo(() => {
@@ -75,24 +113,257 @@ export default function Canvas() {
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId) ?? null;
+  const currentGraph = useMemo(() => toGraph(nodes, edges), [nodes, edges]);
+
+  const selectedNodeInfo = selectedNode
+    ? {
+        id: selectedNode.id,
+        type: data(selectedNode).type,
+        label:
+          metaByType.get(data(selectedNode).type)?.label ??
+          data(selectedNode).label ??
+          data(selectedNode).type,
+      }
+    : null;
+
+  const save = useCallback(
+    async (
+      graphNodes = nodes,
+      graphEdges = edges,
+      opts?: { silent?: boolean },
+    ): Promise<string | null> => {
+      setBusy(true);
+      try {
+        const res = await fetch("/api/workflows", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: workflowId,
+            name,
+            graph: toGraph(graphNodes, graphEdges),
+          }),
+        });
+        if (!res.ok) {
+          if (!opts?.silent) {
+            alert("save ล้มเหลว: " + (await res.text()));
+          }
+          return null;
+        }
+        const { id } = await res.json();
+        setWorkflowId(id);
+        setWorkflows((ws) =>
+          ws.some((w) => w.id === id) ? ws : [{ id, name }, ...ws],
+        );
+        return id;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [nodes, edges, workflowId, name],
+  );
+
+  const clearHighlights = useCallback(() => {
+    setNodes((ns) =>
+      ns.map((n) => ({
+        ...n,
+        data: { ...data(n), aiHighlight: false },
+      })),
+    );
+  }, [setNodes]);
+
+  const applyGraph = useCallback(
+    (graph: Graph, source: "ai" | "load" = "ai") => {
+      if (source === "ai") {
+        setHistoryPast((past) =>
+          pushSnapshot(past, {
+            nodes,
+            edges,
+            seq,
+            selectedNodeId,
+            selectedEdgeId,
+          }),
+        );
+      }
+
+      const before = source === "ai" ? toGraph(nodes, edges) : null;
+      const changedIds =
+        before && source === "ai" ? diffChangedNodeIds(before, graph) : [];
+
+      const flowNodes = graphToFlowNodes(graph, metaByType).map((n) => ({
+        ...n,
+        data: {
+          ...data(n),
+          aiHighlight: changedIds.includes(n.id),
+        },
+      }));
+      const flowEdges = graphToFlowEdges(graph);
+
+      setNodes(flowNodes);
+      setEdges(flowEdges);
+      setSeq(maxSeqFromNodes(flowNodes));
+
+      if (source === "load") {
+        setSelectedNodeId(null);
+        setSelectedEdgeId(null);
+      }
+
+      requestAnimationFrame(() => {
+        fitView({ padding: 0.2, duration: 300 });
+      });
+
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+      }
+      if (changedIds.length > 0) {
+        highlightTimerRef.current = setTimeout(() => {
+          clearHighlights();
+        }, 2500);
+      }
+    },
+    [
+      nodes,
+      edges,
+      seq,
+      selectedNodeId,
+      selectedEdgeId,
+      metaByType,
+      setNodes,
+      setEdges,
+      fitView,
+      clearHighlights,
+    ],
+  );
+
+  const handleAiApply = useCallback(
+    (graph: Graph, _summary: string) => {
+      applyGraph(graph, "ai");
+    },
+    [applyGraph],
+  );
+
+  const undo = useCallback(() => {
+    const { snapshot, remaining } = popSnapshot(historyPast);
+    if (!snapshot) return;
+
+    setHistoryPast(remaining);
+    setNodes(snapshot.nodes);
+    setEdges(snapshot.edges);
+    setSeq(snapshot.seq);
+    setSelectedNodeId(snapshot.selectedNodeId);
+    setSelectedEdgeId(snapshot.selectedEdgeId);
+
+    if (highlightTimerRef.current) {
+      clearTimeout(highlightTimerRef.current);
+    }
+    clearHighlights();
+
+    requestAnimationFrame(() => {
+      fitView({ padding: 0.2, duration: 300 });
+    });
+  }, [historyPast, setNodes, setEdges, fitView, clearHighlights]);
+
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      return;
+    }
+    if (skipAutosaveRef.current) {
+      skipAutosaveRef.current = false;
+      return;
+    }
+
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = setTimeout(() => {
+      void save(undefined, undefined, { silent: true });
+    }, 1500);
+
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  }, [nodes, edges, name, save]);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if (
+        e.key === "/" ||
+        ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k")
+      ) {
+        e.preventDefault();
+        setPaletteOpen(true);
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedNodeId || selectedEdgeId) {
+          e.preventDefault();
+          deleteSelected();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [undo, selectedNodeId, selectedEdgeId]);
 
   const addNode = (type: string) => {
     const id = "n" + seq;
     setSeq(seq + 1);
     const meta = metaByType.get(type);
+
+    // Place below the anchor (selected node, else the most recent one) so nodes
+    // never stack on the same pixel; fall back to viewport center for the first.
+    const anchor =
+      nodes.find((n) => n.id === selectedNodeId) ?? nodes[nodes.length - 1] ?? null;
+    const position = anchor
+      ? { x: anchor.position.x + 280, y: anchor.position.y }
+      : typeof window !== "undefined"
+        ? screenToFlowPosition({
+            x: window.innerWidth / 2,
+            y: window.innerHeight / 2,
+          })
+        : { x: 160, y: 200 };
+
     setNodes((ns) => [
       ...ns,
       {
         id,
-        position: { x: 140, y: 70 * ns.length + 60 },
-        type: "default",
+        position,
+        type: "workflow",
         data: { type, label: meta?.label ?? type, config: {}, onError: "stop" },
       },
     ]);
+
+    // If a node was selected, chain the new one onto it — sequential building
+    // becomes a single action instead of add-then-wire.
+    if (selectedNodeId) {
+      setEdges((es) =>
+        addEdge(
+          {
+            ...FLOW_EDGE,
+            source: selectedNodeId,
+            target: id,
+            sourceHandle: null,
+            targetHandle: null,
+          },
+          es,
+        ),
+      );
+    }
+
+    setSelectedNodeId(id);
+    setSelectedEdgeId(null);
   };
 
   const onConnect = useCallback(
-    (c: Connection) => setEdges((e) => addEdge(c, e)),
+    (c: Connection) => setEdges((e) => addEdge({ ...c, ...FLOW_EDGE }, e)),
     [setEdges],
   );
 
@@ -124,64 +395,90 @@ export default function Canvas() {
     }
   };
 
-  const save = async (): Promise<string | null> => {
-    setBusy(true);
-    try {
-      const res = await fetch("/api/workflows", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: workflowId, name, graph: toGraph(nodes, edges) }),
-      });
-      if (!res.ok) {
-        alert("save ล้มเหลว: " + (await res.text()));
-        return null;
+  // Auto-arrange nodes into clean left-to-right layers by graph depth.
+  // Undoable via ⌘Z (reuses the snapshot history).
+  const tidyLayout = () => {
+    if (nodes.length === 0) return;
+
+    const adj = new Map(nodes.map((n) => [n.id, [] as string[]]));
+    const indeg = new Map(nodes.map((n) => [n.id, 0]));
+    edges.forEach((e) => {
+      if (adj.has(e.source) && indeg.has(e.target)) {
+        adj.get(e.source)!.push(e.target);
+        indeg.set(e.target, indeg.get(e.target)! + 1);
       }
-      const { id } = await res.json();
-      setWorkflowId(id);
-      setWorkflows((ws) =>
-        ws.some((w) => w.id === id) ? ws : [{ id, name }, ...ws],
-      );
-      return id;
-    } finally {
-      setBusy(false);
+    });
+
+    // Kahn topological pass → longest-path layer index per node.
+    const layer = new Map(nodes.map((n) => [n.id, 0]));
+    const work = new Map(indeg);
+    const queue = nodes.filter((n) => work.get(n.id) === 0).map((n) => n.id);
+    while (queue.length) {
+      const id = queue.shift()!;
+      for (const t of adj.get(id) ?? []) {
+        layer.set(t, Math.max(layer.get(t)!, layer.get(id)! + 1));
+        work.set(t, work.get(t)! - 1);
+        if (work.get(t) === 0) queue.push(t);
+      }
     }
+
+    // x by layer, y by order within layer (nodes in cycles stay at layer 0).
+    const COL = 280;
+    const ROW = 120;
+    const X0 = 120;
+    const Y0 = 160;
+    const rowInLayer = new Map<number, number>();
+    const pos = new Map<string, { x: number; y: number }>();
+    nodes.forEach((n) => {
+      const L = layer.get(n.id) ?? 0;
+      const row = rowInLayer.get(L) ?? 0;
+      rowInLayer.set(L, row + 1);
+      pos.set(n.id, { x: X0 + L * COL, y: Y0 + row * ROW });
+    });
+
+    setHistoryPast((past) =>
+      pushSnapshot(past, { nodes, edges, seq, selectedNodeId, selectedEdgeId }),
+    );
+    setNodes((ns) => ns.map((n) => ({ ...n, position: pos.get(n.id) ?? n.position })));
+    requestAnimationFrame(() => fitView({ padding: 0.2, duration: 400 }));
   };
 
   const load = async (id: string) => {
     const res = await fetch(`/api/workflows/${id}`);
     if (!res.ok) return;
     const wf = await res.json();
-    const graph = wf.graph as ReturnType<typeof toGraph>;
-    setNodes(
-      graph.nodes.map((n) => ({
-        id: n.id,
-        position: n.position,
-        type: "default",
-        data: {
-          type: n.type,
-          label: metaByType.get(n.type)?.label ?? n.type,
-          config: n.config ?? {},
-          onError: (n.onError as OnError) ?? "stop",
-        },
-      })),
-    );
-    setEdges(
-      graph.edges.map((e, i) => ({
-        id: `e${i}-${e.from}-${e.to}`,
-        source: e.from,
-        target: e.to,
-        label: e.label,
-      })),
-    );
+    skipAutosaveRef.current = true;
+    applyGraph(wf.graph as Graph, "load");
     setName(wf.name);
     setWorkflowId(id);
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
-    const maxN = graph.nodes
-      .map((n) => parseInt(n.id.replace(/\D/g, ""), 10))
-      .filter((x) => !Number.isNaN(x));
-    setSeq((maxN.length ? Math.max(...maxN) : 0) + 1);
+    setHistoryPast([]);
   };
+
+  // Deep-link from Home: ?id=<wf> opens it; otherwise apply an AI draft stashed
+  // in sessionStorage. Runs once, after node metas resolve so labels render.
+  useEffect(() => {
+    if (didInitRef.current || !metasLoaded) return;
+    didInitRef.current = true;
+
+    const id = new URLSearchParams(window.location.search).get("id");
+    if (id) {
+      void load(id);
+      return;
+    }
+
+    const pending = sessionStorage.getItem("pendingGraph");
+    if (!pending) return;
+    sessionStorage.removeItem("pendingGraph");
+    try {
+      const parsed = JSON.parse(pending) as { graph: Graph; name?: string };
+      skipAutosaveRef.current = true;
+      if (parsed.name) setName(parsed.name);
+      applyGraph(parsed.graph, "load");
+    } catch {
+      // ignore malformed draft
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [metasLoaded]);
 
   const runNow = async () => {
     const id = await save();
@@ -204,167 +501,249 @@ export default function Canvas() {
     }
   };
 
-  const btn: React.CSSProperties = {
-    display: "block",
-    width: "100%",
-    margin: "4px 0",
-    padding: "6px 8px",
-    fontSize: 13,
-    borderRadius: 6,
-    border: "1px solid #d4d4d8",
-    background: "#fff",
-    cursor: "pointer",
-    textAlign: "left",
-  };
-
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "system-ui, sans-serif" }}>
-      {/* palette + actions */}
-      <div style={{ width: 190, padding: 12, borderRight: "1px solid #eee", overflowY: "auto" }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: "#888", marginBottom: 6 }}>NODES</div>
-        {metas.map((m) => (
-          <button key={m.type} onClick={() => addNode(m.type)} style={btn} title={m.description}>
-            + {m.label}
-          </button>
-        ))}
-
-        <hr style={{ margin: "12px 0", border: 0, borderTop: "1px solid #eee" }} />
-
+    <main className="stack" style={{ minHeight: "100vh" }}>
+      <div className="topbar">
+        <a
+          href="/"
+          className="home-brand"
+          style={{ fontSize: "var(--font-size-base)" }}
+          title="Back to home"
+        >
+          <span className="home-brand-mark">◆</span>
+          Fluxion
+        </a>
+        <span className="topbar-sep" />
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="ชื่อ workflow"
-          style={{ ...btn, cursor: "text" }}
+          placeholder="Untitled workflow"
+          className="input topbar-name"
+          aria-label="Workflow name"
         />
-        <button onClick={save} disabled={busy} style={{ ...btn, background: "#f4f4f5" }}>
-          💾 Save
+        <span className="helper" aria-live="polite">
+          {busy ? "Saving…" : "Saved"}
+        </span>
+
+        <div className="flex-1" />
+
+        <button
+          type="button"
+          onClick={tidyLayout}
+          disabled={nodes.length === 0}
+          title="Auto-arrange nodes left-to-right"
+          className="btn btn-secondary topbar-button"
+        >
+          <LayoutGrid size={15} strokeWidth={2} /> Tidy
         </button>
         <button
-          onClick={runNow}
-          disabled={busy}
-          style={{ ...btn, background: "#2563eb", color: "#fff", border: "1px solid #2563eb" }}
+          type="button"
+          onClick={undo}
+          disabled={historyPast.length === 0}
+          title="Undo (⌘Z)"
+          className="btn btn-secondary topbar-button"
         >
-          ▶ Run now
+          <Undo2 size={15} strokeWidth={2} /> Undo
         </button>
-        <button onClick={deleteSelected} disabled={!selectedNodeId && !selectedEdgeId} style={btn}>
-          🗑 Delete selected
-        </button>
-
-        <hr style={{ margin: "12px 0", border: 0, borderTop: "1px solid #eee" }} />
-        <div style={{ fontSize: 11, fontWeight: 700, color: "#888", marginBottom: 6 }}>LOAD</div>
         <select
-          style={{ ...btn, cursor: "pointer" }}
+          className="select topbar-select"
           value={workflowId ?? ""}
-          onChange={(e) => e.target.value && load(e.target.value)}
+          onChange={(e) => e.target.value && void load(e.target.value)}
+          aria-label="Open workflow"
         >
-          <option value="">— เลือก workflow —</option>
+          <option value="">Open…</option>
           {workflows.map((w) => (
             <option key={w.id} value={w.id}>
               {w.name}
             </option>
           ))}
         </select>
-      </div>
-
-      {/* canvas */}
-      <div style={{ flex: 1 }}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodeClick={(_, n) => {
-            setSelectedNodeId(n.id);
-            setSelectedEdgeId(null);
-          }}
-          onEdgeClick={(_, e) => {
-            setSelectedEdgeId(e.id);
-            setSelectedNodeId(null);
-          }}
-          onPaneClick={() => {
-            setSelectedNodeId(null);
-            setSelectedEdgeId(null);
-          }}
-          fitView
+        <button
+          type="button"
+          onClick={() => void runNow()}
+          disabled={busy}
+          className="btn btn-primary topbar-button"
         >
-          <Background />
-          <Controls />
-        </ReactFlow>
+          <Play size={15} strokeWidth={2} /> Run
+        </button>
+        <span className="badge">
+          {nodes.length} · {edges.length}
+        </span>
       </div>
 
-      {/* inspector */}
-      {(selectedNode || selectedEdge) && (
-        <div style={{ width: 300, padding: 16, borderLeft: "1px solid #eee", overflowY: "auto" }}>
-          {selectedNode && (
-            <>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>
-                {metaByType.get(data(selectedNode).type)?.label ?? data(selectedNode).type}
-              </div>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 14 }}>
-                {selectedNode.id} · {data(selectedNode).type}
-              </div>
+      <div className="canvas-shell" style={{ minHeight: 0, flex: 1 }}>
+        <AiHelperPanel
+          currentGraph={currentGraph}
+          onApplyGraph={handleAiApply}
+          nodeCount={nodes.length}
+          workflowName={name}
+          selectedNode={selectedNodeInfo}
+        />
 
-              <label style={{ display: "block", marginBottom: 14 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>On error</div>
-                <select
-                  value={data(selectedNode).onError}
-                  onChange={(e) =>
-                    updateNodeData(selectedNode.id, { onError: e.target.value as OnError })
-                  }
-                  style={{
-                    width: "100%",
-                    padding: "6px 8px",
-                    fontSize: 13,
-                    border: "1px solid #d4d4d8",
-                    borderRadius: 6,
-                  }}
-                >
-                  <option value="stop">stop — หยุด run</option>
-                  <option value="continue">continue — ข้าม</option>
-                  <option value="route">route — ไป edge ชื่อ error</option>
-                </select>
-              </label>
-
-              {metaByType.has(data(selectedNode).type) && (
-                <NodeConfigForm
-                  meta={metaByType.get(data(selectedNode).type)!}
-                  config={data(selectedNode).config ?? {}}
-                  onChange={(cfg) => updateNodeData(selectedNode.id, { config: cfg })}
-                />
-              )}
-            </>
+        <section className="canvas-stage surface hero-surface panel panel-compact">
+          {clientReady ? (
+            <ReactFlow
+              className="canvas-flow"
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              defaultEdgeOptions={FLOW_EDGE}
+              deleteKeyCode={null}
+              proOptions={{ hideAttribution: true }}
+              onNodeClick={(_, n) => {
+                setSelectedNodeId(n.id);
+                setSelectedEdgeId(null);
+              }}
+              onEdgeClick={(_, e) => {
+                setSelectedEdgeId(e.id);
+                setSelectedNodeId(null);
+              }}
+              onPaneClick={() => {
+                setSelectedNodeId(null);
+                setSelectedEdgeId(null);
+              }}
+              fitView
+            >
+              <Background gap={20} />
+              <MiniMap className="canvas-minimap" pannable zoomable />
+              <Controls showInteractive={false} />
+            </ReactFlow>
+          ) : (
+            <div className="row h-full justify-center text-muted text-sm">
+              Loading canvas…
+            </div>
           )}
 
-          {selectedEdge && (
-            <>
-              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 4 }}>Edge</div>
-              <div style={{ fontSize: 11, color: "#888", marginBottom: 14 }}>
-                {selectedEdge.source} → {selectedEdge.target}
+          {clientReady && nodes.length === 0 && (
+            <div className="canvas-empty">
+              <span className="canvas-empty-icon">
+                <Waypoints size={26} strokeWidth={1.5} />
+              </span>
+              <div className="title-md">Start building</div>
+              <div className="helper">
+                Press <kbd className="fab-kbd">/</kbd> to add a node, or ask the AI
+                Helper to draft a workflow for you.
               </div>
-              <label style={{ display: "block" }}>
-                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Label</div>
-                <input
-                  value={(selectedEdge.label as string) ?? ""}
-                  onChange={(e) => setEdgeLabel(selectedEdge.id, e.target.value)}
-                  placeholder="true / false / error"
-                  style={{
-                    width: "100%",
-                    padding: "6px 8px",
-                    fontSize: 13,
-                    border: "1px solid #d4d4d8",
-                    borderRadius: 6,
-                    boxSizing: "border-box",
-                  }}
-                />
-                <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
-                  ใช้กับ if (true/false) และ error routing (error)
+            </div>
+          )}
+
+          {clientReady && (
+            <button
+              type="button"
+              className="canvas-add-fab"
+              onClick={() => setPaletteOpen(true)}
+              title="Add node ( / or ⌘K )"
+            >
+              <Plus size={16} strokeWidth={2} /> Add node
+              <kbd className="fab-kbd">/</kbd>
+            </button>
+          )}
+        </section>
+
+        {(selectedNode || selectedEdge) && (
+          <aside className="inspector surface panel stack-md overflow-y-auto">
+            {selectedNode && (
+              <div className="stack stack-md">
+                <div className="row-between">
+                  <div>
+                    <div className="title-md row" style={{ gap: 8 }}>
+                      <NodeIcon type={data(selectedNode).type} size={26} />
+                      {metaByType.get(data(selectedNode).type)?.label ?? data(selectedNode).type}
+                    </div>
+                    <div className="helper">
+                      {selectedNode.id} · {data(selectedNode).type}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={deleteSelected}
+                    className="btn btn-danger topbar-button"
+                    title="Delete node (⌫)"
+                  >
+                    <Trash2 size={15} strokeWidth={2} />
+                  </button>
                 </div>
-              </label>
-            </>
-          )}
-        </div>
-      )}
-    </div>
+
+                <label className="field">
+                  <div className="label">On error</div>
+                  <select
+                    value={data(selectedNode).onError}
+                    onChange={(e) =>
+                      updateNodeData(selectedNode.id, {
+                        onError: e.target.value as OnError,
+                      })
+                    }
+                    className="select"
+                  >
+                    <option value="stop">stop — หยุด run</option>
+                    <option value="continue">continue — ข้าม</option>
+                    <option value="route">route — ไป edge ชื่อ error</option>
+                  </select>
+                </label>
+
+                {metaByType.has(data(selectedNode).type) && (
+                  <NodeConfigForm
+                    meta={metaByType.get(data(selectedNode).type)!}
+                    config={data(selectedNode).config ?? {}}
+                    onChange={(cfg) => updateNodeData(selectedNode.id, { config: cfg })}
+                  />
+                )}
+              </div>
+            )}
+
+            {selectedEdge && (
+              <div className="stack stack-md">
+                <div className="row-between">
+                  <div>
+                    <div className="title-md">Connection</div>
+                    <div className="helper">
+                      {selectedEdge.source} → {selectedEdge.target}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={deleteSelected}
+                    className="btn btn-danger topbar-button"
+                    title="Delete connection (⌫)"
+                  >
+                    <Trash2 size={15} strokeWidth={2} />
+                  </button>
+                </div>
+                <label className="field">
+                  <div className="label">Label</div>
+                  <input
+                    value={(selectedEdge.label as string) ?? ""}
+                    onChange={(e) => setEdgeLabel(selectedEdge.id, e.target.value)}
+                    placeholder="true / false / error"
+                    className="input"
+                  />
+                  <div className="helper">
+                    ใช้กับ if (true/false) และ error routing (error)
+                  </div>
+                </label>
+              </div>
+            )}
+          </aside>
+        )}
+      </div>
+
+      <NodePalette
+        metas={metas}
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onPick={addNode}
+      />
+    </main>
+  );
+}
+
+export default function Canvas() {
+  return (
+    <ReactFlowProvider>
+      <CanvasInner />
+    </ReactFlowProvider>
   );
 }

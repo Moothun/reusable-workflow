@@ -5,7 +5,7 @@
 
 สแต็ก: **Next.js (App Router, TS) · React Flow · Prisma/Postgres · Inngest · Vercel AI SDK**
 
-> **สถานะ: Day 1 scaffold** — โปรเจกต์ตั้งต้น + hello-world บน Inngest + shared contract (`lib/graph.ts`) พร้อมต่อ Day 2
+> **สถานะ: Day 2–5 (branch `canvas`)** — engine + canvas builder + AI Helper panel พร้อม glow/undo บน `/canvas`
 
 ---
 
@@ -37,18 +37,33 @@ Triggers ทุกทาง (UI Run / POST /api/run / webhook / cron) รวม�
 
 ```
 app/
+  api/assistant/route.ts    # AI helper — POST mode build → { graph, summary }
   api/inngest/route.ts      # Inngest handler (serve functions)
-  api/test-hello/route.ts   # ปุ่มยิง hello event (Day 1 smoke test)
-  layout.tsx  page.tsx      # หน้าแรก + ปุ่มทดสอบ
+  api/run/route.ts          # trigger workflow run
+  api/workflows/route.ts    # save/load workflow graph
+  api/hooks/[id]/route.ts   # webhook trigger
+  api/nodes/route.ts        # node metadata สำหรับ palette
+  api/test-hello/route.ts   # smoke test hello event
+  canvas/page.tsx           # workflow builder (React Flow + AI Helper)
+  runs/[id]/page.tsx        # run log viewer
+  layout.tsx  page.tsx
+components/
+  AiHelperPanel.tsx         # chat panel สร้าง/แก้ graph ด้วย AI
+  NodeConfigForm.tsx        # config form จาก FieldSpec
+  WorkflowNode.tsx          # custom React Flow node (+ AI glow)
 lib/
-  graph.ts                  # CONTRACT ร่วม (Graph / Envelope / NodeDef) — ห้ามเปลี่ยนเดี่ยว
-  inngest.ts                # client + functions (hello-world)
+  graph.ts                  # CONTRACT ร่วม (Graph / Envelope / NodeDef)
+  assistant.ts              # AI helper logic (buildGraphFromPrompt)
+  canvas-graph.ts           # graph ↔ React Flow conversion
+  graph-diff.ts             # diff node ids หลัง AI apply (glow)
+  graph-history.ts          # undo stack สำหรับ AI apply
+  interpreter.ts            # graph walker / execution engine
+  inngest.ts                # client + functions
+  ai.ts                     # OpenRouter provider
   db.ts                     # Prisma client (singleton)
+  nodes/                    # node registry + implementations
 prisma/schema.prisma        # Workflow / Run / NodeRun
 ```
-
-จะทยอยเพิ่มตามแผน: `lib/interpreter.ts`, `lib/nodes/*`, `app/(canvas)/*`,
-`app/runs/[id]/page.tsx`, `app/api/{run,hooks,workflows,assistant}/route.ts`
 
 ---
 
@@ -71,9 +86,12 @@ prisma/schema.prisma        # Workflow / Run / NodeRun
    ```bash
    npm install
    ```
-2. ตั้ง env — copy แล้วกรอกค่า (อย่างน้อย `DATABASE_URL` — Neon/Supabase free tier ก็ได้)
+2. ตั้ง env — สร้าง `.env` แล้วกรอกค่าอย่างน้อย:
+   - `DATABASE_URL` — Postgres (Neon/Supabase free tier ก็ได้)
+   - `OPENROUTER_API_KEY` — สำหรับ AI node + AI Helper panel (`lib/ai.ts`)
    ```bash
-   cp .env.example .env
+   DATABASE_URL=postgresql://...
+   OPENROUTER_API_KEY=sk-or-...
    ```
 3. สร้างตารางใน DB
    ```bash
@@ -84,8 +102,9 @@ prisma/schema.prisma        # Workflow / Run / NodeRun
    npm run dev            # terminal 1 — Next.js ที่ http://localhost:3000
    npm run inngest:dev    # terminal 2 — Inngest dev server ที่ http://localhost:8288
    ```
-5. ทดสอบ hello-world — เปิด http://localhost:3000 → กดปุ่ม "ยิง hello-world event"
-   → ดูที่ http://localhost:8288 ว่า function `hello-world` รันสำเร็จ
+5. ทดสอบ canvas + AI Helper — เปิด http://localhost:3000/canvas
+   → ใช้ panel **AI Helper** ซ้ายสุด พิมพ์คำสั่งสร้าง workflow (ต้องมี `OPENROUTER_API_KEY`)
+   → node ที่ AI เพิ่ม/แก้จะเรืองแสงชั่วครู่ · กด **Undo** ย้อน graph ก่อน AI apply
 
 ---
 
@@ -94,7 +113,7 @@ prisma/schema.prisma        # Workflow / Run / NodeRun
 **เป้า:** URL production เปิดได้ + Inngest function รันบน cloud เห็นใน dashboard
 
 1. push repo ขึ้น GitHub
-2. import เข้า **Vercel** → ตั้ง env (`DATABASE_URL`, `OPENAI_API_KEY`, `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`)
+2. import เข้า **Vercel** → ตั้ง env (`DATABASE_URL`, `OPENROUTER_API_KEY`, `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`)
 3. ไป **Inngest Cloud** → เชื่อม Vercel integration หรือ sync endpoint `https://<your-app>.vercel.app/api/inngest`
 4. ยิง event บน prod (กดปุ่มในหน้าเว็บ) → เห็น run ใน Inngest Cloud dashboard
 
@@ -134,7 +153,7 @@ export const myNode: NodeDef = {
 | 2 | interpreter + `trigger`/`transform` + Run/NodeRun | ลาก/ต่อ node + save/load graph |
 | 3 | `ai.instruct` + structured output + retry + error policy | gen ฟอร์ม config จาก Zod + palette |
 | 4 | `http.request`/`email.send`/`if` | หน้า Run + log NodeRun |
-| 5 | webhook route + Inngest cron | AI Helper panel → วาง graph ลง canvas |
+| 5 | webhook route + Inngest cron | AI Helper panel ✅ — chat + `/api/assistant` mode `build`, glow, undo |
 | 6 | ประกอบ 2 workflow จริง end-to-end (ทั้งคู่) | |
 | 7 | harden: validate, secret handling, auth, `interpreter.test.ts` | |
 | 8 | polish + deploy รอบจริง + demo | |
