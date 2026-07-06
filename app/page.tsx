@@ -17,6 +17,7 @@ import type { Graph } from "@/lib/graph";
 import { BRAND } from "@/lib/brand";
 import PlanReview from "@/components/PlanReview";
 import { useAssistant } from "@/components/useAssistant";
+import BrandMark from "@/components/BrandMark";
 
 type Workflow = { id: string; name: string; createdAt: string };
 
@@ -93,7 +94,9 @@ export default function Home() {
     <div className="home">
       <header className="home-topbar">
         <span className="home-brand">
-          <span className="home-brand-mark">{BRAND.emoji}</span>
+          <span className="home-brand-mark">
+            <BrandMark size={18} />
+          </span>
           {BRAND.name}
         </span>
         <button

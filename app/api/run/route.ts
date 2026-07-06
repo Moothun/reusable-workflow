@@ -17,6 +17,7 @@ export async function POST(req: Request) {
       graph,
       payload = {},
       startNodeId,
+      stopNodeId,
     } = await req.json();
 
     let workflowId: string | undefined = wfIdInput;
@@ -36,7 +37,14 @@ export async function POST(req: Request) {
 
     await inngest.send({
       name: "workflow.run",
-      data: { runId: run.id, workflowId, payload, trigger: "manual", startNodeId },
+      data: {
+        runId: run.id,
+        workflowId,
+        payload,
+        trigger: "manual",
+        startNodeId,
+        stopNodeId,
+      },
     });
 
     return Response.json({ runId: run.id, workflowId });

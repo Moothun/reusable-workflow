@@ -13,7 +13,7 @@ export async function GET(
   try {
     const { id } = await params;
     const run = await prisma.run.findFirst({
-      where: { workflowId: id },
+      where: { workflowId: id, trigger: { not: "test" } },
       orderBy: { startedAt: "desc" },
       include: { nodeRuns: { orderBy: { createdAt: "asc" } } },
     });

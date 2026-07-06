@@ -22,7 +22,7 @@ export async function runGraph(
   runId: string,
   step: StepLike,
   payload: Record<string, unknown> = {},
-  opts: { startNodeId?: string } = {},
+  opts: { startNodeId?: string; stopNodeId?: string } = {},
 ): Promise<{ status: "success" | "failed" }> {
   const byId = new Map<string, Node>(graph.nodes.map((n) => [n.id, n]));
   const visited = new Set<string>();
@@ -112,6 +112,12 @@ export async function runGraph(
     visited.add(node.id);
     steps++;
     outputs[node.id] = out.data; // เก็บผลให้ node หลังอ้างผ่าน {{node.id.field}}
+
+    // single-node / range run: หยุดหลังรัน stopNodeId เสร็จ (ไม่เดินต่อ downstream)
+    if (node.id === opts.stopNodeId) {
+      if (out.status === "failed") halted = true;
+      break;
+    }
 
     if (out.status === "failed") {
       if (node.onError === "continue") {
