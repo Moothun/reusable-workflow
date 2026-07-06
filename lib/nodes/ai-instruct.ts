@@ -7,6 +7,21 @@ import { ok, type NodeDef } from "@/lib/graph";
 const FieldType = z.enum(["string", "number", "boolean"]);
 
 /**
+ * ยอมรับ outputSchema แบบ shorthand object แล้ว normalize → array ที่ buildSchema ต้องการ
+ *   { decision: "string", score: { type: "number", description } } → [{name,type,description}]
+ * (AI assistant กับ placeholder คาย object รูปนี้ — ถ้าไม่แปลง safeParse จะ fail แล้ว config ถูกทิ้งทั้งก้อน)
+ * type แปลก ๆ → "string" เพื่อให้ผ่าน FieldType เสมอ
+ */
+function toFieldArray(v: unknown) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return v;
+  return Object.entries(v as Record<string, any>).map(([name, spec]) => {
+    const raw = typeof spec === "string" ? spec : spec?.type;
+    const type = raw === "number" || raw === "boolean" ? raw : "string";
+    return { name, type, description: typeof spec === "object" ? spec?.description : undefined };
+  });
+}
+
+/**
  * แปลง field list → zod object
  * [{name:"decision", type:"string", description:"..."}] → z.object({ decision: z.string().describe("...") })
  */
@@ -32,12 +47,15 @@ export const aiInstruct: NodeDef = {
     prompt: z.string(),
     model: z.string().optional(),
     outputSchema: z
-      .array(
-        z.object({
-          name: z.string(),
-          type: FieldType,
-          description: z.string().optional(),
-        }),
+      .preprocess(
+        toFieldArray,
+        z.array(
+          z.object({
+            name: z.string(),
+            type: FieldType,
+            description: z.string().optional(),
+          }),
+        ),
       )
       .optional(),
   }),
@@ -117,3 +135,19 @@ export const aiInstruct: NodeDef = {
     return ok(object as Record<string, unknown>);
   },
 };
+
+// self-check: shorthand object → array (run: npx tsx lib/nodes/ai-instruct.ts)
+if (process.argv[1]?.replace(/\\/g, "/").endsWith("lib/nodes/ai-instruct.ts")) {
+  const r = toFieldArray({ decision: { type: "string" }, score: "number", note: "text" });
+  console.assert(
+    JSON.stringify(r) ===
+      JSON.stringify([
+        { name: "decision", type: "string", description: undefined },
+        { name: "score", type: "number", description: undefined },
+        { name: "note", type: "string", description: undefined },
+      ]),
+    "toFieldArray failed:",
+    r,
+  );
+  console.log("ok", r);
+}
