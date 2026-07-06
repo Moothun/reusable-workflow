@@ -749,6 +749,9 @@ body {
     padding: 6px var(--space-2);
     font-size: var(--font-size-xs);
   }
+  .topbar-back {
+    text-decoration: none;
+  }
 
   /* ---- run progress pill ---- */
   .run-pill {
@@ -779,6 +782,83 @@ body {
   }
   .run-dot.is-failed {
     background: var(--error);
+  }
+
+  /* ---- run panel (bottom drawer: live timeline) ---- */
+  .run-panel {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    gap: var(--space-2);
+    max-height: 34vh;
+    overflow-y: auto;
+    padding: var(--space-3) var(--space-5);
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .run-panel__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .run-panel__warn {
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--font-size-xs);
+    color: #8a5a12;
+    background: #fdf4e3;
+    border: 1px solid #f0d29a;
+    border-radius: var(--radius-md);
+  }
+  .run-panel__timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .run-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+  .run-row:hover {
+    background: var(--secondary);
+  }
+  .run-row__id {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* ---- friendly error box (non-tech) ---- */
+  .error-friendly {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    background: #fdeef0;
+    border: 1px solid #eab8c4;
+    border-radius: var(--radius-md);
+  }
+  .error-friendly__summary {
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    color: #8a2f3c;
+    line-height: 1.5;
+  }
+  .error-friendly__toggle {
+    align-self: flex-start;
+    font-size: var(--font-size-xs);
   }
 
   /* ---- canvas empty state ---- */
@@ -1043,6 +1123,15 @@ body {
 }
 .workflow-node__status.is-skipped {
   background: #9a96ad;
+}
+.workflow-node--running,
+.workflow-node--queued {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+.workflow-node__status.is-running,
+.workflow-node__status.is-queued {
+  background: var(--primary);
 }
 
 @keyframes run-pulse {
