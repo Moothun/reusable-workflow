@@ -67,6 +67,24 @@ function Field({
           value={(value as number) ?? ""}
           onChange={(e) => onChange(e.target.value === "" ? undefined : Number(e.target.value))}
         />
+      ) : spec.kind === "file" ? (
+        <div className="stack stack-sm">
+          <input
+            type="file"
+            className="input"
+            accept="application/pdf,image/*"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const r = new FileReader();
+              r.onload = () => onChange(r.result as string);
+              r.readAsDataURL(file);
+            }}
+          />
+          {typeof value === "string" && value.startsWith("data:") && (
+            <div className="helper">✓ loaded (~{Math.round(value.length / 1365)} KB)</div>
+          )}
+        </div>
       ) : spec.kind === "select" ? (
         <select className="select" value={(value as string) ?? ""} onChange={(e) => onChange(e.target.value)}>
           <option value="">— เลือก —</option>

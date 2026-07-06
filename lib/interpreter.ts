@@ -31,9 +31,11 @@ export async function runGraph(
 
   // partial re-run (D5): เริ่มจาก startNodeId ถ้าส่งมา (node ก่อนหน้าไม่รัน →
   // {{ก่อนหน้า.field}} จะว่างเพราะ outputs map ว่างช่วงต้น) · ไม่งั้นเริ่มที่ trigger
+  // (trigger หรือ *.trigger เช่น email.trigger / file.trigger)
   let current: Node | undefined = opts.startNodeId
     ? byId.get(opts.startNodeId)
-    : (graph.nodes.find((n) => n.type === "trigger") ?? graph.nodes[0]);
+    : (graph.nodes.find((n) => n.type === "trigger" || n.type.endsWith(".trigger")) ??
+      graph.nodes[0]);
   let envelope: Envelope = ok(payload);
   let steps = 0;
   let halted = false;

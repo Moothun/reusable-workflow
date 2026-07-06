@@ -80,11 +80,39 @@ export const aiInstruct: NodeDef = {
         ? buildSchema(cfg.outputSchema)
         : z.object({ text: z.string() }); // โหมด text
 
-    const { object } = await generateObject({
-      model: openrouter.chat(cfg.model ?? DEFAULT_MODEL),
-      schema,
-      prompt: `${cfg.prompt}\n\nINPUT DATA:\n${JSON.stringify(input.data)}`,
-    });
+    const model = openrouter.chat(cfg.model ?? DEFAULT_MODEL);
+    const data = input.data as Record<string, unknown>;
+    const file = typeof data.file === "string" ? data.file : undefined;
+
+    // มีไฟล์แนบ (จาก file.trigger) → ส่งให้โมเดลอ่านเอง (ต้องใช้โมเดลที่รองรับ PDF/รูป)
+    // ไม่มีไฟล์ → ยัด input.data เป็น JSON ต่อท้าย prompt เหมือนเดิม
+    const { object } = file
+      ? await generateObject({
+          model,
+          schema,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: cfg.prompt },
+                {
+                  type: "file",
+                  data: file,
+                  // มาจาก config.mimeType ก่อน · ไม่มีก็แกะจาก data URL prefix · สุดท้าย fallback PDF
+                  mediaType:
+                    (typeof data.mimeType === "string" && data.mimeType) ||
+                    file.match(/^data:([^;,]+)[;,]/)?.[1] ||
+                    "application/pdf",
+                },
+              ],
+            },
+          ],
+        })
+      : await generateObject({
+          model,
+          schema,
+          prompt: `${cfg.prompt}\n\nINPUT DATA:\n${JSON.stringify(input.data)}`,
+        });
 
     return ok(object as Record<string, unknown>);
   },
