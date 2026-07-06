@@ -28,18 +28,6 @@ function evaluate(left: unknown, op: string, value: string): boolean {
   }
 }
 
-const OPERATORS = [
-  "eq",
-  "neq",
-  "gt",
-  "gte",
-  "lt",
-  "lte",
-  "contains",
-  "truthy",
-  "exists",
-] as const;
-
 /**
  * if — เทียบ input.data.<field> กับ value แล้วแตกทาง
  * interpreter จะอ่าน data.__branch ("true"/"false") แล้วเดิน edge ที่ label ตรงกัน
@@ -55,15 +43,15 @@ export const ifNode: NodeDef = {
     label: "If", 
     description: "แตกทาง true/false ตามเงื่อนไขบนข้อมูล",
     fields: [
-      { name: "field", label: "Field path", kind: "text", required: true, placeholder: "decision" },
+      { name: "field", label: "Field path", kind: "text", required: true, placeholder: "decision", help: "อ่านค่าจาก input เช่น decision หรือ user.email" },
       {
-        name: "operator",
+        name: "op",
         label: "Operator",
         kind: "select",
-        options: [...OPERATORS],
+        options: ["==", "!=", ">", "<", ">=", "<="],
         required: true,
       },
-      { name: "value", label: "Value", kind: "text", placeholder: "approve" },
+      { name: "value", label: "Value", kind: "text", required: true, placeholder: "approve" },
     ]
    },
   retries: 0,
