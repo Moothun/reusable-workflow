@@ -750,6 +750,37 @@ body {
     font-size: var(--font-size-xs);
   }
 
+  /* ---- run progress pill ---- */
+  .run-pill {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .run-pill:hover {
+    border-color: var(--border-strong);
+  }
+  .run-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: var(--radius-full);
+    background: var(--text-muted);
+  }
+  .run-dot.is-queued {
+    background: var(--warning);
+  }
+  .run-dot.is-running {
+    background: var(--primary);
+    animation: run-pulse 1s ease-in-out infinite;
+  }
+  .run-dot.is-success {
+    background: var(--success);
+  }
+  .run-dot.is-failed {
+    background: var(--error);
+  }
+
   /* ---- canvas empty state ---- */
   .canvas-empty {
     position: absolute;
@@ -945,6 +976,7 @@ body {
    Workflow canvas nodes
 --------------------------------------------------------------------------- */
 .workflow-node {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -982,6 +1014,45 @@ body {
 .workflow-node--selected {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+/* run states — subtle border tint + a corner status badge (icon, not color-only) */
+.workflow-node--success {
+  border-color: #b8dcc8;
+}
+.workflow-node--failed {
+  border-color: #eab8c4;
+}
+.workflow-node__status {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--surface);
+  color: #fff;
+}
+.workflow-node__status.is-success {
+  background: var(--success);
+}
+.workflow-node__status.is-failed {
+  background: var(--error);
+}
+.workflow-node__status.is-skipped {
+  background: #9a96ad;
+}
+
+@keyframes run-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 
 .workflow-node--ai-highlight {

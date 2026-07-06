@@ -46,6 +46,10 @@ const data = nodeData;
 
 const nodeTypes = { workflow: WorkflowNode };
 
+const statusVariant = (s: string) =>
+  s === "success" ? "success" : s === "failed" ? "error" : "neutral";
+const fmtIO = (v: unknown) => (v == null ? "—" : JSON.stringify(v, null, 2));
+
 function toGraph(nodes: Node[], edges: Edge[]) {
   return {
     nodes: nodes.map((n) => ({
@@ -80,6 +84,11 @@ function CanvasInner() {
   const [busy, setBusy] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [historyPast, setHistoryPast] = useState<CanvasSnapshot[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [runStatus, setRunStatus] = useState<string | null>(null);
+  const [nodeRuns, setNodeRuns] = useState<
+    Record<string, { status: string; input: unknown; output: unknown; error: string | null }>
+  >({});
 
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -125,6 +134,17 @@ function CanvasInner() {
           data(selectedNode).type,
       }
     : null;
+
+  // Inject last-run status for display only — kept out of `nodes` so run polling
+  // never triggers autosave (toGraph ignores runStatus anyway).
+  const displayNodes = useMemo(
+    () =>
+      nodes.map((n) => ({
+        ...n,
+        data: { ...(n.data as object), runStatus: nodeRuns[n.id]?.status },
+      })),
+    [nodes, nodeRuns],
+  );
 
   const save = useCallback(
     async (
@@ -313,6 +333,55 @@ function CanvasInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [undo, selectedNodeId, selectedEdgeId]);
 
+  const fetchLatestRun = useCallback(async (wfId: string) => {
+    try {
+      const res = await fetch(`/api/workflows/${wfId}/latest-run`);
+      if (!res.ok) return;
+      const json = (await res.json()) as {
+        runId: string | null;
+        status?: string;
+        nodeRuns?: Array<{
+          nodeId: string;
+          status: string;
+          input: unknown;
+          output: unknown;
+          error: string | null;
+        }>;
+      };
+      if (!json.runId) {
+        setActiveRunId(null);
+        setRunStatus(null);
+        setNodeRuns({});
+        return;
+      }
+      setActiveRunId(json.runId);
+      setRunStatus(json.status ?? null);
+      const map: Record<
+        string,
+        { status: string; input: unknown; output: unknown; error: string | null }
+      > = {};
+      for (const nr of json.nodeRuns ?? []) {
+        map[nr.nodeId] = {
+          status: nr.status,
+          input: nr.input,
+          output: nr.output,
+          error: nr.error,
+        };
+      }
+      setNodeRuns(map);
+    } catch {
+      // ignore transient poll errors
+    }
+  }, []);
+
+  // Poll while a run is active so the canvas fills in node statuses live.
+  useEffect(() => {
+    if (!workflowId || !activeRunId) return;
+    if (runStatus !== "queued" && runStatus !== "running") return;
+    const t = setInterval(() => void fetchLatestRun(workflowId), 1200);
+    return () => clearInterval(t);
+  }, [workflowId, activeRunId, runStatus, fetchLatestRun]);
+
   const addNode = (type: string) => {
     const id = "n" + seq;
     setSeq(seq + 1);
@@ -452,6 +521,10 @@ function CanvasInner() {
     setName(wf.name);
     setWorkflowId(id);
     setHistoryPast([]);
+    setActiveRunId(null);
+    setRunStatus(null);
+    setNodeRuns({});
+    void fetchLatestRun(id);
   };
 
   // Deep-link from Home: ?id=<wf> opens it; otherwise apply an AI draft stashed
@@ -495,7 +568,12 @@ function CanvasInner() {
         return;
       }
       const { runId } = await res.json();
-      if (runId) router.push(`/runs/${runId}`);
+      if (runId) {
+        setActiveRunId(runId);
+        setRunStatus("queued");
+        setNodeRuns({});
+        void fetchLatestRun(id);
+      }
     } finally {
       setBusy(false);
     }
@@ -561,11 +639,24 @@ function CanvasInner() {
         <button
           type="button"
           onClick={() => void runNow()}
-          disabled={busy}
+          disabled={busy || runStatus === "queued" || runStatus === "running"}
           className="btn btn-primary topbar-button"
         >
           <Play size={15} strokeWidth={2} /> Run
         </button>
+        {activeRunId && (
+          <button
+            type="button"
+            className="badge run-pill"
+            onClick={() => router.push(`/runs/${activeRunId}`)}
+            title="View full run details"
+          >
+            <span className={`run-dot is-${runStatus ?? "queued"}`} />
+            {runStatus === "running" || runStatus === "queued"
+              ? "Running…"
+              : `Run ${runStatus}`}
+          </button>
+        )}
         <span className="badge">
           {nodes.length} · {edges.length}
         </span>
@@ -584,7 +675,7 @@ function CanvasInner() {
           {clientReady ? (
             <ReactFlow
               className="canvas-flow"
-              nodes={nodes}
+              nodes={displayNodes}
               edges={edges}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
@@ -691,6 +782,37 @@ function CanvasInner() {
                     onChange={(cfg) => updateNodeData(selectedNode.id, { config: cfg })}
                   />
                 )}
+
+                {(() => {
+                  const nr = nodeRuns[selectedNode.id];
+                  return (
+                    <div className="stack stack-sm">
+                      <div className="row-between">
+                        <div className="eyebrow">Last run I/O</div>
+                        {nr && (
+                          <span className={`badge badge-${statusVariant(nr.status)}`}>
+                            {nr.status}
+                          </span>
+                        )}
+                      </div>
+                      {nr ? (
+                        <div className="stack stack-sm">
+                          <div className="label">Input</div>
+                          <pre className="code-block">{fmtIO(nr.input)}</pre>
+                          <div className="label">Output</div>
+                          <pre className="code-block">{fmtIO(nr.output)}</pre>
+                          {nr.error && (
+                            <pre className="code-block code-block-error">{nr.error}</pre>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="helper">
+                          No data yet — run to see this node&apos;s output.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
