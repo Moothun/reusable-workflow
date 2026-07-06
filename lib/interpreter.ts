@@ -22,14 +22,18 @@ export async function runGraph(
   runId: string,
   step: StepLike,
   payload: Record<string, unknown> = {},
+  opts: { startNodeId?: string } = {},
 ): Promise<{ status: "success" | "failed" }> {
   const byId = new Map<string, Node>(graph.nodes.map((n) => [n.id, n]));
   const visited = new Set<string>();
   /** ผลของทุก node ที่รันแล้ว (B-lite) — ให้ {{nodeId.field}} อ้างได้ */
   const outputs: Record<string, unknown> = {};
 
-  let current: Node | undefined =
-    graph.nodes.find((n) => n.type === "trigger") ?? graph.nodes[0];
+  // partial re-run (D5): เริ่มจาก startNodeId ถ้าส่งมา (node ก่อนหน้าไม่รัน →
+  // {{ก่อนหน้า.field}} จะว่างเพราะ outputs map ว่างช่วงต้น) · ไม่งั้นเริ่มที่ trigger
+  let current: Node | undefined = opts.startNodeId
+    ? byId.get(opts.startNodeId)
+    : (graph.nodes.find((n) => n.type === "trigger") ?? graph.nodes[0]);
   let envelope: Envelope = ok(payload);
   let steps = 0;
   let halted = false;
