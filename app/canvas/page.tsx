@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { friendlyError, statusThai } from "@/lib/friendly-errors";
 import { BRAND } from "@/lib/brand";
+import BrandMark from "@/components/BrandMark";
 import type { NodeMeta } from "@/lib/nodes/types";
 import type { Graph } from "@/lib/graph";
 import {
@@ -118,6 +119,7 @@ function CanvasInner() {
   const [runPanelOpen, setRunPanelOpen] = useState(false);
   const [askFromError, setAskFromError] = useState<{ text: string } | null>(null);
   const [showTechnical, setShowTechnical] = useState(false);
+  const [retryingNodeId, setRetryingNodeId] = useState<string | null>(null);
 
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -622,6 +624,7 @@ function CanvasInner() {
   const startRun = async (
     startNodeId?: string,
     payload: Record<string, unknown> = {},
+    stopNodeId?: string,
   ) => {
     const id = await save();
     if (!id) return;
@@ -635,7 +638,7 @@ function CanvasInner() {
       const res = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflowId: id, payload, startNodeId }),
+        body: JSON.stringify({ workflowId: id, payload, startNodeId, stopNodeId }),
       });
       if (!res.ok) {
         alert("run ล้มเหลว: " + (await res.text()));
@@ -655,15 +658,48 @@ function CanvasInner() {
     }
   };
   const runNow = () => void startRun();
-  const runFromHere = (nodeId: string) => void startRun(nodeId);
 
-  // Retry a failed step: re-run from that node with its ORIGINAL input (the data
-  // it received last time). Runs from the node onward — a true single-node run
-  // would need interpreter stopNodeId support, which is off-limits here.
-  const retryNode = (nodeId: string) => {
+  // Partial run via the synchronous /api/test (directRunner) — reliable, runs the
+  // CURRENT interpreter in-process (the Inngest path drops start/stopNodeId).
+  // single=true → run ONLY that node (start == stop); else from the node onward.
+  const runSync = async (nodeId: string, single: boolean) => {
     const nr = nodeRunsById[nodeId];
-    void startRun(nodeId, (nr?.input as Record<string, unknown>) ?? {});
+    const id = await save();
+    if (!id) return;
+    setRetryingNodeId(nodeId);
+    setRunPanelOpen(true);
+    try {
+      const res = await fetch("/api/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workflowId: id,
+          startNodeId: nodeId,
+          stopNodeId: single ? nodeId : undefined,
+          sampleInput: nr?.input ?? {},
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("รันไม่สำเร็จ: " + (data.error ?? ""));
+        return;
+      }
+      // merge only the nodes that just ran; keep the rest of the run's statuses
+      const updated: RunNode[] = data.nodeRuns ?? [];
+      setRunNodeRuns((prev) => {
+        const map = new Map(prev.map((n) => [n.nodeId, n]));
+        for (const u of updated) map.set(u.nodeId, u);
+        return [...map.values()];
+      });
+      setPartialRun(!single);
+    } finally {
+      setRetryingNodeId(null);
+    }
   };
+
+  // "ลองใหม่ขั้นตอนนี้" = รัน node เดียวด้วยอินพุตเดิม · "รันจากขั้นตอนนี้" = ตั้งแต่ node นี้ไป
+  const retryNode = (nodeId: string) => void runSync(nodeId, true);
+  const runFromHere = (nodeId: string) => void runSync(nodeId, false);
 
   const composeErrorPrompt = (node: Node) => {
     const nr = nodeRunsById[node.id];
@@ -703,7 +739,9 @@ function CanvasInner() {
           className="home-brand"
           style={{ fontSize: "var(--font-size-base)" }}
         >
-          <span className="home-brand-mark">{BRAND.emoji}</span>
+          <span className="home-brand-mark">
+            <BrandMark size={18} />
+          </span>
           <span className="hidden md:inline">{BRAND.name}</span>
         </span>
         <span className="topbar-sep" />
@@ -915,19 +953,26 @@ function CanvasInner() {
                   <button
                     type="button"
                     onClick={() => runFromHere(selectedNode.id)}
-                    disabled={busy || runStatus === "queued" || runStatus === "running"}
+                    disabled={busy || retryingNodeId === selectedNode.id}
                     className="btn btn-secondary"
                     style={{ width: "100%", justifyContent: "center" }}
                     title="รัน workflow เริ่มจากขั้นตอนนี้"
                   >
-                    <Play size={14} strokeWidth={2} /> รันจากขั้นตอนนี้
+                    {retryingNodeId === selectedNode.id ? (
+                      <>
+                        <Loader2 size={14} strokeWidth={2} className="animate-spin" /> กำลังรัน…
+                      </>
+                    ) : (
+                      <>
+                        <Play size={14} strokeWidth={2} /> รันจากขั้นตอนนี้
+                      </>
+                    )}
                   </button>
                 )}
 
                 {(() => {
                   const nr = nodeRunsById[selectedNode.id];
-                  const runActive =
-                    runStatus === "queued" || runStatus === "running";
+                  const retrying = retryingNodeId === selectedNode.id;
 
                   if (!nr) {
                     return (
@@ -952,10 +997,10 @@ function CanvasInner() {
                             <button
                               type="button"
                               className="btn btn-secondary"
-                              disabled={runActive}
+                              disabled={retrying}
                               onClick={() => retryNode(selectedNode.id)}
                             >
-                              {runActive ? (
+                              {retrying ? (
                                 <>
                                   <Loader2
                                     size={14}
