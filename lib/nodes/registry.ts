@@ -5,6 +5,8 @@ import { aiInstruct } from "./ai-instruct";
 import { ifNode } from "./if";
 import { httpRequest } from "./http-request";
 import { emailSend } from "./email-send";
+import { emailTrigger } from "./email-trigger";
+import { fileUpload } from "./file-upload";
 import { setFields } from "./set-fields";
 
 /**
@@ -18,6 +20,8 @@ export const registry: Record<string, NodeDef> = {
   if: ifNode,
   "http.request": httpRequest,
   "email.send": emailSend,
+  "email.trigger": emailTrigger,
+  "file.trigger": fileUpload,
   set: setFields,
 };
 

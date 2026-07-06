@@ -3,6 +3,8 @@ import {
   Sparkles,
   Globe,
   Mail,
+  Inbox,
+  FileUp,
   GitBranch,
   Shuffle,
   SlidersHorizontal,
@@ -25,6 +27,8 @@ const VISUALS: Record<string, NodeVisual> = {
   set: { Icon: SlidersHorizontal, category: "Data" },
   "http.request": { Icon: Globe, category: "Web" },
   "email.send": { Icon: Mail, category: "Message" },
+  "email.trigger": { Icon: Inbox, category: "Trigger" },
+  "file.trigger": { Icon: FileUp, category: "Trigger" },
 };
 
 const FALLBACK: NodeVisual = { Icon: Box, category: "Node" };

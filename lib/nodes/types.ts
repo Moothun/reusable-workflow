@@ -8,7 +8,7 @@ import type { NodeDef } from "@/lib/graph";
 export type FieldSpec = {
   name: string;
   label: string;
-  kind: "text" | "textarea" | "number" | "boolean" | "select" | "json";
+  kind: "text" | "textarea" | "number" | "boolean" | "select" | "json" | "file";
   options?: string[];
   placeholder?: string;
   required?: boolean;
