@@ -20,6 +20,8 @@ export type CanvasNodeData = {
   config: Record<string, unknown>;
   onError: OnError;
   aiHighlight?: boolean;
+  /** last-run status injected for display only (not persisted to the graph) */
+  runStatus?: string;
 };
 
 /** React Flow node data accessor */

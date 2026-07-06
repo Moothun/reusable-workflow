@@ -7,6 +7,21 @@ import { ok, type NodeDef } from "@/lib/graph";
 const FieldType = z.enum(["string", "number", "boolean"]);
 
 /**
+ * ยอมรับ outputSchema แบบ shorthand object แล้ว normalize → array ที่ buildSchema ต้องการ
+ *   { decision: "string", score: { type: "number", description } } → [{name,type,description}]
+ * (AI assistant กับ placeholder คาย object รูปนี้ — ถ้าไม่แปลง safeParse จะ fail แล้ว config ถูกทิ้งทั้งก้อน)
+ * type แปลก ๆ → "string" เพื่อให้ผ่าน FieldType เสมอ
+ */
+function toFieldArray(v: unknown) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return v;
+  return Object.entries(v as Record<string, any>).map(([name, spec]) => {
+    const raw = typeof spec === "string" ? spec : spec?.type;
+    const type = raw === "number" || raw === "boolean" ? raw : "string";
+    return { name, type, description: typeof spec === "object" ? spec?.description : undefined };
+  });
+}
+
+/**
  * แปลง field list → zod object
  * [{name:"decision", type:"string", description:"..."}] → z.object({ decision: z.string().describe("...") })
  */
@@ -32,12 +47,15 @@ export const aiInstruct: NodeDef = {
     prompt: z.string(),
     model: z.string().optional(),
     outputSchema: z
-      .array(
-        z.object({
-          name: z.string(),
-          type: FieldType,
-          description: z.string().optional(),
-        }),
+      .preprocess(
+        toFieldArray,
+        z.array(
+          z.object({
+            name: z.string(),
+            type: FieldType,
+            description: z.string().optional(),
+          }),
+        ),
       )
       .optional(),
   }),
@@ -80,12 +98,56 @@ export const aiInstruct: NodeDef = {
         ? buildSchema(cfg.outputSchema)
         : z.object({ text: z.string() }); // โหมด text
 
-    const { object } = await generateObject({
-      model: openrouter.chat(cfg.model ?? DEFAULT_MODEL),
-      schema,
-      prompt: `${cfg.prompt}\n\nINPUT DATA:\n${JSON.stringify(input.data)}`,
-    });
+    const model = openrouter.chat(cfg.model ?? DEFAULT_MODEL);
+    const data = input.data as Record<string, unknown>;
+    const file = typeof data.file === "string" ? data.file : undefined;
+
+    // มีไฟล์แนบ (จาก file.trigger) → ส่งให้โมเดลอ่านเอง (ต้องใช้โมเดลที่รองรับ PDF/รูป)
+    // ไม่มีไฟล์ → ยัด input.data เป็น JSON ต่อท้าย prompt เหมือนเดิม
+    const { object } = file
+      ? await generateObject({
+          model,
+          schema,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: cfg.prompt },
+                {
+                  type: "file",
+                  data: file,
+                  // มาจาก config.mimeType ก่อน · ไม่มีก็แกะจาก data URL prefix · สุดท้าย fallback PDF
+                  mediaType:
+                    (typeof data.mimeType === "string" && data.mimeType) ||
+                    file.match(/^data:([^;,]+)[;,]/)?.[1] ||
+                    "application/pdf",
+                },
+              ],
+            },
+          ],
+        })
+      : await generateObject({
+          model,
+          schema,
+          prompt: `${cfg.prompt}\n\nINPUT DATA:\n${JSON.stringify(input.data)}`,
+        });
 
     return ok(object as Record<string, unknown>);
   },
 };
+
+// self-check: shorthand object → array (run: npx tsx lib/nodes/ai-instruct.ts)
+if (process.argv[1]?.replace(/\\/g, "/").endsWith("lib/nodes/ai-instruct.ts")) {
+  const r = toFieldArray({ decision: { type: "string" }, score: "number", note: "text" });
+  console.assert(
+    JSON.stringify(r) ===
+      JSON.stringify([
+        { name: "decision", type: "string", description: undefined },
+        { name: "score", type: "number", description: undefined },
+        { name: "note", type: "string", description: undefined },
+      ]),
+    "toFieldArray failed:",
+    r,
+  );
+  console.log("ok", r);
+}

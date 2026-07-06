@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { BRAND } from "@/lib/brand";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Reusable Workflow Builder",
-  description: "Drag-and-drop workflow builder with AI helper",
+  title: BRAND.name,
+  description: `${BRAND.name} — สร้างระบบอัตโนมัติด้วย AI แบบไม่ต้องเขียนโค้ด · ${BRAND.tagline}`,
 };
 
 export default function RootLayout({
