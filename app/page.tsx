@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import type { Graph } from "@/lib/graph";
 import { BRAND } from "@/lib/brand";
+import PlanReview from "@/components/PlanReview";
+import { useAssistant } from "@/components/useAssistant";
 
 type Workflow = { id: string; name: string; createdAt: string };
 
@@ -37,10 +39,20 @@ const CATEGORIES: { Icon: LucideIcon; label: string; prompt: string }[] = [
 export default function Home() {
   const router = useRouter();
   const [input, setInput] = useState("");
-  const [drafting, setDrafting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [recent, setRecent] = useState<Workflow[]>([]);
+  const intentRef = useRef("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Approved plan → build → stash the graph → open the canvas to see it.
+  const { messages, choices, plan, busy, send, approve, reset } = useAssistant({
+    onBuilt: (graph) => {
+      sessionStorage.setItem(
+        "pendingGraph",
+        JSON.stringify({ graph, name: intentRef.current.slice(0, 48) || "New workflow" }),
+      );
+      router.push("/canvas?new");
+    },
+  });
 
   useEffect(() => {
     fetch("/api/workflows")
@@ -49,29 +61,18 @@ export default function Home() {
       .catch(() => setRecent([]));
   }, []);
 
-  // Describe intent → AI drafts a graph → stash it → open canvas to review
-  const draft = async (message: string) => {
-    const trimmed = message.trim();
-    if (!trimmed || drafting) return;
-    setDrafting(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/assistant", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "build", message: trimmed }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Could not draft a workflow");
-      sessionStorage.setItem(
-        "pendingGraph",
-        JSON.stringify({ graph: data.graph as Graph, name: trimmed.slice(0, 48) }),
-      );
-      router.push("/canvas?new");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong");
-      setDrafting(false);
-    }
+  const submit = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || busy) return;
+    if (!intentRef.current) intentRef.current = trimmed;
+    void send(trimmed);
+    setInput("");
+    textareaRef.current?.focus();
+  };
+
+  const startOver = () => {
+    reset();
+    intentRef.current = "";
   };
 
   const fillPrompt = (text: string) => {
@@ -82,9 +83,11 @@ export default function Home() {
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      void draft(input);
+      submit(input);
     }
   };
+
+  const started = messages.length > 0;
 
   return (
     <div className="home">
@@ -106,14 +109,18 @@ export default function Home() {
         <section className="home-hero">
           <h1 className="home-title">What workflow will you create today?</h1>
           <p className="home-subtitle">
-            Describe what you want automated — AI will draft a workflow for you to review.
+            {plan
+              ? "Here's the plan — approve it to open the canvas, or keep chatting to adjust."
+              : started
+                ? "Answer a couple of questions and I'll draft a plan you can approve."
+                : "Describe what you want automated — AI will ask a few questions, then draft a plan."}
           </p>
 
           <form
             className="home-aibar"
             onSubmit={(e) => {
               e.preventDefault();
-              void draft(input);
+              submit(input);
             }}
           >
             <textarea
@@ -121,18 +128,22 @@ export default function Home() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              disabled={drafting}
+              disabled={busy}
               rows={2}
-              placeholder="e.g. Summarize PDFs emailed to me and save to Drive every Friday"
+              placeholder={
+                started
+                  ? "Answer, or add more detail…"
+                  : "e.g. Summarize PDFs emailed to me and save to Drive every Friday"
+              }
             />
             <button
               type="submit"
               className="home-submit"
-              disabled={drafting || !input.trim()}
-              aria-label="Draft workflow"
-              title="Draft workflow"
+              disabled={busy || !input.trim()}
+              aria-label="Send"
+              title="Send"
             >
-              {drafting ? (
+              {busy ? (
                 <Loader2 size={18} strokeWidth={2} className="animate-spin" />
               ) : (
                 <Sparkles size={18} strokeWidth={1.75} />
@@ -140,45 +151,89 @@ export default function Home() {
             </button>
           </form>
 
-          {drafting && (
-            <div className="helper row" style={{ gap: 6 }}>
-              <Loader2 size={14} strokeWidth={2} className="animate-spin" />
-              Drafting your workflow — opening the canvas…
+          {started && (
+            <div
+              className="stack stack-sm"
+              style={{ maxWidth: 560, width: "100%", textAlign: "left" }}
+            >
+              {messages.map((m, i) => (
+                <div
+                  key={i}
+                  className={`chat-bubble ${m.role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}`}
+                >
+                  {m.text}
+                </div>
+              ))}
+              {busy && (
+                <div className="chat-bubble chat-bubble-assistant">
+                  {plan ? "Building your workflow…" : "Thinking…"}
+                </div>
+              )}
+
+              {choices.length > 0 && !busy && (
+                <div className="row-wrap">
+                  {choices.map((c) => (
+                    <button
+                      key={c.key}
+                      type="button"
+                      className="chip chip-ai"
+                      onClick={() => submit(c.label)}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {plan && (
+                <div className="surface stack stack-md" style={{ padding: 20 }}>
+                  <PlanReview
+                    plan={plan}
+                    busy={busy}
+                    onApprove={() => void approve()}
+                    onStartOver={startOver}
+                    approveLabel="Approve & open canvas"
+                  />
+                </div>
+              )}
             </div>
           )}
-          {error && <span className="badge badge-error">{error}</span>}
 
-          <div className="row-wrap" style={{ justifyContent: "center" }}>
-            {SUGGESTIONS.map((s) => (
+          {!started && (
+            <div className="row-wrap" style={{ justifyContent: "center" }}>
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className="chip"
+                  disabled={busy}
+                  onClick={() => submit(s)}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {!started && (
+          <div className="cat-row">
+            {CATEGORIES.map((c) => (
               <button
-                key={s}
+                key={c.label}
                 type="button"
-                className="chip"
-                disabled={drafting}
-                onClick={() => void draft(s)}
+                className="cat-item"
+                onClick={() => fillPrompt(c.prompt)}
+                title={c.prompt}
               >
-                {s}
+                <span className="cat-circle" aria-hidden>
+                  <c.Icon size={22} strokeWidth={1.75} />
+                </span>
+                <span className="cat-label">{c.label}</span>
               </button>
             ))}
           </div>
-        </section>
-
-        <div className="cat-row">
-          {CATEGORIES.map((c) => (
-            <button
-              key={c.label}
-              type="button"
-              className="cat-item"
-              onClick={() => fillPrompt(c.prompt)}
-              title={c.prompt}
-            >
-              <span className="cat-circle" aria-hidden>
-                <c.Icon size={22} strokeWidth={1.75} />
-              </span>
-              <span className="cat-label">{c.label}</span>
-            </button>
-          ))}
-        </div>
+        )}
 
         <section>
           <div className="home-section-head">

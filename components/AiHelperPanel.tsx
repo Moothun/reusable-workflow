@@ -4,12 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 import type { Graph } from "@/lib/graph";
 import NodeIcon from "@/components/NodeIcon";
-
-type Message = {
-  role: "user" | "assistant";
-  text: string;
-  nodeCount?: number;
-};
+import PlanReview from "@/components/PlanReview";
+import { useAssistant } from "@/components/useAssistant";
 
 type SelectedNode = { id: string; type: string; label: string };
 
@@ -30,6 +26,9 @@ const STARTERS = [
   "Every morning: fetch data, transform it, summarize with AI",
 ];
 
+const GREETING =
+  "Hi! Tell me what you want to automate. I'll ask a couple of questions, then draft a plan you can approve.";
+
 export default function AiHelperPanel({
   currentGraph,
   onApplyGraph,
@@ -38,55 +37,25 @@ export default function AiHelperPanel({
   selectedNode = null,
   askFromError = null,
 }: Props) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      text: "Hi! Tell me what you want to automate and I'll build it on the canvas — or pick a quick action below.",
-    },
-  ]);
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const send = async (text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed || loading) return;
+  const { messages, choices, plan, busy, send, approve, reset } = useAssistant({
+    getCurrentGraph: () => currentGraph,
+    onBuilt: onApplyGraph,
+    greeting: GREETING,
+  });
 
-    setMessages((m) => [...m, { role: "user", text: trimmed }]);
+  const submit = (text: string) => {
+    void send(text);
     setInput("");
-    setLoading(true);
-
-    try {
-      const res = await fetch("/api/assistant", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "build", message: trimmed, currentGraph }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "request failed");
-
-      onApplyGraph(data.graph as Graph, data.summary as string);
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          text: data.summary as string,
-          nodeCount: (data.graph as Graph).nodes.length,
-        },
-      ]);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Something went wrong";
-      setMessages((m) => [...m, { role: "assistant", text: `⚠️ ${msg}` }]);
-    } finally {
-      setLoading(false);
-      textareaRef.current?.focus();
-    }
+    textareaRef.current?.focus();
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      void send(input);
+      submit(input);
     }
   };
 
@@ -100,9 +69,8 @@ export default function AiHelperPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askFromError]);
-
-  // Quick actions adapt to whether a node is selected. All produce graph edits,
-  // which the "build" assistant mode applies directly to the canvas.
+  // Quick actions adapt to whether a node is selected. Each seeds the conversation,
+  // which loops to a plan before applying to the canvas.
   const quickActions: { label: string; prompt: string }[] = selectedNode
     ? [
         {
@@ -115,8 +83,7 @@ export default function AiHelperPanel({
         },
         {
           label: "Add error handling",
-          prompt:
-            "Add error handling to this workflow so failures are routed to a notification.",
+          prompt: "Add error handling to this workflow so failures are routed to a notification.",
         },
       ]
     : [
@@ -126,8 +93,7 @@ export default function AiHelperPanel({
         },
         {
           label: "Add error handling",
-          prompt:
-            "Add error handling so failures are routed and the team is notified.",
+          prompt: "Add error handling so failures are routed and the team is notified.",
         },
         {
           label: "Optimize this workflow",
@@ -150,15 +116,12 @@ export default function AiHelperPanel({
           {selectedNode ? (
             <span className="row" style={{ gap: 6 }}>
               <NodeIcon type={selectedNode.type} size={22} />
-              Editing{" "}
-              <strong style={{ color: "var(--text)" }}>{selectedNode.label}</strong>
+              Editing <strong style={{ color: "var(--text)" }}>{selectedNode.label}</strong>
             </span>
           ) : (
             <>
               Building{" "}
-              <strong style={{ color: "var(--text)" }}>
-                {workflowName || "your workflow"}
-              </strong>
+              <strong style={{ color: "var(--text)" }}>{workflowName || "your workflow"}</strong>
             </>
           )}
         </div>
@@ -178,31 +141,65 @@ export default function AiHelperPanel({
               )}
             </div>
           ))}
-          {loading && (
-            <div className="chat-bubble chat-bubble-assistant">Building your workflow…</div>
+          {busy && (
+            <div className="chat-bubble chat-bubble-assistant">
+              {plan ? "Building your workflow…" : "Thinking…"}
+            </div>
           )}
         </div>
 
-        <div className="stack stack-sm">
-          <div className="eyebrow">Quick actions</div>
+        {/* Clickable answers to the AI's questions */}
+        {choices.length > 0 && !busy && (
           <div className="row-wrap">
-            {quickActions.map((a) => (
+            {choices.map((c) => (
               <button
-                key={a.label}
+                key={c.key}
                 type="button"
                 className="chip chip-ai row"
                 style={{ gap: 6 }}
-                disabled={loading}
-                onClick={() => void send(a.prompt)}
+                onClick={() => submit(c.label)}
               >
-                <Sparkles size={13} strokeWidth={2} />
-                {a.label}
+                {c.label}
               </button>
             ))}
           </div>
-        </div>
+        )}
 
-        {nodeCount === 0 && (
+        {plan && (
+          <div className="stack stack-sm">
+            <div className="eyebrow">Plan · review before building</div>
+            <PlanReview
+              plan={plan}
+              busy={busy}
+              onApprove={() => void approve()}
+              onStartOver={reset}
+              approveLabel="Approve & build on canvas"
+            />
+          </div>
+        )}
+
+        {!plan && (
+          <div className="stack stack-sm">
+            <div className="eyebrow">Quick actions</div>
+            <div className="row-wrap">
+              {quickActions.map((a) => (
+                <button
+                  key={a.label}
+                  type="button"
+                  className="chip chip-ai row"
+                  style={{ gap: 6 }}
+                  disabled={busy}
+                  onClick={() => submit(a.prompt)}
+                >
+                  <Sparkles size={13} strokeWidth={2} />
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {nodeCount === 0 && !plan && (
           <div className="stack stack-sm">
             <div className="eyebrow">Try</div>
             <div className="row-wrap">
@@ -211,8 +208,8 @@ export default function AiHelperPanel({
                   key={s}
                   type="button"
                   className="chip"
-                  disabled={loading}
-                  onClick={() => void send(s)}
+                  disabled={busy}
+                  onClick={() => submit(s)}
                 >
                   {s.length > 40 ? s.slice(0, 40) + "…" : s}
                 </button>
@@ -228,8 +225,8 @@ export default function AiHelperPanel({
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
-          disabled={loading}
-          placeholder="Describe a change or a new workflow…"
+          disabled={busy}
+          placeholder="Describe a change or answer the question…"
           rows={3}
           className="textarea"
         />
